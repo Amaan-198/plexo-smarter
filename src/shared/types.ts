@@ -297,6 +297,8 @@ export interface QueueItem {
   problem?: QueueItemProblem
   /** Downloads started for it, retries included. */
   attempts: number
+  /** Waiting, after a failure a moment could fix, for its automatic retry at this time. */
+  retryAt?: number
   /** When it completed or failed. */
   finishedAt?: number
 }
@@ -322,6 +324,10 @@ export interface QueueState {
   /** The saved queue couldn't be read at launch: what to tell the user. Nothing is saved over it
    * until a relaunch reads it. */
   loadError?: string
+  /** Running, but no network is connected: the next item starts once one is. */
+  waitingForNetwork: boolean
+  /** Why the queue stopped itself: its folder can't be saved to (gone, read-only, full). */
+  stoppedBecause?: string
   items: QueueItem[]
   bridge: BrowserBridgeState
 }

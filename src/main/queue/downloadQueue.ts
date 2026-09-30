@@ -21,12 +21,21 @@ import { readJson, updateJson } from '../jsonFile'
 import type { NetworkMonitor } from '../network/interfaces'
 import { seal } from '../secrets'
 import { testKnobs } from '../testKnobs'
-import { classifyDownload, classifyError, LinkExpiredError, type Failure } from './failures'
+import {
+  classifyDownload,
+  classifyError,
+  folderProblem,
+  LinkExpiredError,
+  type Failure
+} from './failures'
 import { hostOf, sameName, sanitizeLink, sanitizeStoredItem, type StoredItem } from './items'
 
 /** Downloads started for an item before a failure that isn't the link's fault (a server
  * error, a dropped connection) stops being retried on its own. */
 const MAX_AUTO_ATTEMPTS = 2
+/** How long an automatic retry waits: long enough for a server's moment of trouble to pass.
+ * The item keeps its place meanwhile, and the ones after it go ahead. */
+const AUTO_RETRY_DELAY_MS = testKnobs.retryBaseDelayMs * 10
 /** Pasted links are looked up (size, name) in the background, this many at a time. */
 const LOOKUP_CONCURRENCY = 2
 const MAX_ITEMS = 5000
@@ -77,6 +86,12 @@ export class DownloadQueue {
   private lookingUp = new Set<string>()
   /** Each download's status as last seen: what tells a change of status from progress. */
   private seenStatus = new Map<string, DownloadStatus>()
+  /** Running, but no network is connected: see networksChanged. */
+  private waitingForNetwork = false
+  /** Why the queue stopped itself, till it's started again (see stopBecause). */
+  private stoppedBecause: string | undefined
+  /** Wakes the queue for the earliest automatic retry. */
+  private retryTimer: NodeJS.Timeout | null = null
   private bridge: BrowserBridgeState = { status: 'starting', port: 0, pairedCount: 0 }
   /** Tallied since the queue last had nothing to do, for the "queue finished" notification. */
   private session = { completed: 0, failed: 0, lastName: '' }
@@ -178,6 +193,8 @@ export class DownloadQueue {
       destinationDir: this.destinationDir,
       blocked: this.blocked,
       loadError: this.loadError,
+      waitingForNetwork: this.running && this.waitingForNetwork,
+      stoppedBecause: this.stoppedBecause,
       items: this.items.map((item) => {
         const view: StoredItem = { ...item }
         delete view.context
@@ -362,6 +379,7 @@ export class DownloadQueue {
     item.error = undefined
     item.problem = undefined
     item.finishedAt = undefined
+    item.retryAt = undefined
   }
 
   private finish(item: StoredItem, status: 'completed' | 'failed', failure?: Failure): void {
@@ -429,6 +447,7 @@ export class DownloadQueue {
     await this.loaded
     this.running = true
     this.blocked = false
+    this.stoppedBecause = undefined
     this.changed()
     await this.enqueue(async () => {
       const current = await this.manager?.currentState()
@@ -497,6 +516,7 @@ export class DownloadQueue {
       item.attempts = 0
     }
     this.running = true
+    this.stoppedBecause = undefined
     this.changed()
     this.pump()
   }
@@ -558,6 +578,7 @@ export class DownloadQueue {
     // Set before the saved queue has loaded, it would be overwritten by the saved folder.
     await this.loaded
     this.destinationDir = dir
+    this.stoppedBecause = undefined
     this.changed()
   }
 
@@ -576,7 +597,7 @@ export class DownloadQueue {
         // Removed while it was the current download (New Download on its screen): it is done
         // with, as far as the user is concerned.
         if (item.status === 'active') {
-          this.finish(item, 'failed', { problem: 'cancelled', error: 'Removed' })
+          this.finish(item, 'failed', { problem: 'cancelled', error: 'Removed', retry: false })
         }
         this.changed()
       }
@@ -616,6 +637,7 @@ export class DownloadQueue {
           item.status = 'active'
           item.error = undefined
           item.problem = undefined
+          item.retryAt = undefined
           this.changed()
         }
         return
@@ -645,18 +667,19 @@ export class DownloadQueue {
         if (item.status !== 'active') return
         // Cancelling throws the download away, so a retry starts over. The item keeps its id
         // while it's on screen: Download Again there sends the item back to the queue.
-        this.fail(item, { problem: 'cancelled', error: 'Cancelled' })
+        this.fail(item, { problem: 'cancelled', error: 'Cancelled', retry: false })
+        item.bytesDownloaded = 0
         this.pump()
         return
     }
   }
 
-  /** Marks an item failed — or, for a failure that isn't the link's fault and hasn't used up
-   * its attempts, sends it to the back of the queue for another go. */
+  /** Marks an item failed — or, for a failure a moment could fix that hasn't used up its
+   * attempts, has it wait a moment for another go (see AUTO_RETRY_DELAY_MS). */
   private fail(item: StoredItem, failure: Failure): void {
-    if (failure.problem === 'other' && item.attempts < MAX_AUTO_ATTEMPTS) {
+    if (failure.retry && item.attempts < MAX_AUTO_ATTEMPTS) {
       this.requeue(item)
-      this.items = [...this.items.filter((entry) => entry !== item), item]
+      item.retryAt = Date.now() + AUTO_RETRY_DELAY_MS
     } else {
       this.finish(item, 'failed', failure)
       this.session.failed++
@@ -710,11 +733,25 @@ export class DownloadQueue {
     }
     if (blocked) return
 
-    const item = this.items.find((entry) => entry.status === 'queued')
+    // The first waiting item not held back for an automatic retry (see fail).
+    const now = Date.now()
+    const waiting = this.items.filter((entry) => entry.status === 'queued')
+    const item = waiting.find((entry) => (entry.retryAt ?? 0) <= now)
     if (!item) {
-      this.finishSession()
+      const retryAt = Math.min(...waiting.map((entry) => entry.retryAt ?? Infinity))
+      if (retryAt < Infinity) this.wakeAt(retryAt)
+      else this.finishSession()
       return
     }
+
+    // With no network at all, every item would fail in turn: wait for one (see networksChanged).
+    const interfaceIds = await this.networksToUse()
+    const offline = interfaceIds.length === 0
+    if (offline !== this.waitingForNetwork) {
+      this.waitingForNetwork = offline
+      this.scheduleEmit()
+    }
+    if (offline) return
 
     // The queue's finished downloads are done with; only the one on screen is still shown.
     for (const done of this.items) {
@@ -729,11 +766,19 @@ export class DownloadQueue {
     item.attempts++
     item.error = undefined
     item.problem = undefined
+    item.retryAt = undefined
     this.changed()
 
     try {
       const { probe, context } = await probeWithContext(item.url, item.context)
       if (!this.items.includes(item)) return // removed meanwhile
+      if (!this.running) {
+        // Paused while the link was being checked: it waits, not started.
+        item.status = 'queued'
+        item.attempts--
+        this.changed()
+        return
+      }
       // What a file host sends once a session link has run out: its own page.
       if (probe.contentType?.startsWith('text/html') && !probe.attachment) {
         throw new LinkExpiredError(
@@ -758,8 +803,6 @@ export class DownloadQueue {
         await manager.remove(stale)
       }
 
-      const interfaceIds = await this.networksToUse()
-      if (interfaceIds.length === 0) throw new Error('No network connection')
       const downloadId = await manager.start({
         url: probe.finalUrl,
         destinationDir: this.destinationDir,
@@ -789,10 +832,13 @@ export class DownloadQueue {
       if (state) this.applyState(item, state)
     } catch (error) {
       if (!this.items.includes(item)) return
-      if (await manager.isBusy()) {
-        // The user started a download of their own meanwhile: this one waits its turn again.
+      const problem = folderProblem(error, this.destinationDir)
+      if (problem || (await manager.isBusy())) {
+        // Its folder can't be saved to — nor could any other item's be — or the user started a
+        // download of their own meanwhile: either way, not this item's failure. It waits.
         item.status = 'queued'
         item.attempts--
+        if (problem) this.stopBecause(problem)
         this.changed()
         return
       }
@@ -800,6 +846,37 @@ export class DownloadQueue {
     }
     // Failed without a download to report back: go on to the next one.
     if (item.status !== 'active') this.pump()
+  }
+
+  /** Networks came or went. The queue waiting for one carries on once one is there. */
+  networksChanged(networks: readonly unknown[]): void {
+    if (this.waitingForNetwork && networks.length > 0) this.pump()
+  }
+
+  /** Runs the queue again at `at`, for an automatic retry due then. */
+  private wakeAt(at: number): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer)
+    this.retryTimer = setTimeout(
+      () => {
+        this.retryTimer = null
+        this.pump()
+      },
+      Math.max(0, at - Date.now())
+    )
+  }
+
+  /** Stops the queue over something only the user can fix, and says so — here and, as they may
+   * well be away, in a notification. */
+  private stopBecause(problem: string): void {
+    this.running = false
+    this.stoppedBecause = problem
+    this.changed()
+    if (testKnobs.userDataDir || !Notification.isSupported()) return
+    try {
+      new Notification({ title: 'Queue paused', body: problem }).show()
+    } catch {
+      // Best-effort notification
+    }
   }
 
   /** Nothing left to start: says how it went — in one notification, rather than one per file

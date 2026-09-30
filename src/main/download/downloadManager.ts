@@ -476,13 +476,16 @@ function formatGigabytes(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`
 }
 
+/** The destination volume hasn't room for the whole file. */
+export class NotEnoughSpaceError extends Error {}
+
 /** The staging file is on the destination volume and becomes the final file by rename. */
 async function ensureDiskSpace(destinationDir: string, requiredBytes: number): Promise<void> {
   if (requiredBytes <= 0) return // unknown size — nothing to check against
   const stats = await statfs(destinationDir)
   const availableBytes = stats.bavail * stats.bsize
   if (availableBytes < requiredBytes) {
-    throw new Error(
+    throw new NotEnoughSpaceError(
       `Not enough disk space: this download needs ${formatGigabytes(requiredBytes)} but only ${formatGigabytes(availableBytes)} is free`
     )
   }

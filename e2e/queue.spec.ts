@@ -1,8 +1,9 @@
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
-import { request as httpRequest } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { dirname, join } from 'node:path'
 import type { QueueItem, QueueState } from '../src/shared/types'
-import { expect, LAN_ADDRESS, test, type PlexoApp } from './fixtures'
+import { expect, interfacesEnv, LAN_ADDRESS, NETWORKS, test, type PlexoApp } from './fixtures'
 import { sha256, type Origin } from './origin'
 
 // Q. The download queue and the browser extension's local endpoint: links downloaded one after
@@ -656,5 +657,173 @@ test.describe('the queue and the main screen', () => {
       'own.bin is downloading on its own, outside the queue. The queue carries on once it’s done.'
     )
     await plexo.waitForStatus('completed')
+  })
+})
+
+test.describe('failures and retries', () => {
+  /** What the computer's networks are now, as the app will see them at its next look. */
+  const setNetworks = (plexo: PlexoApp, value: string): Promise<void> =>
+    plexo.evaluateMain((_electron, networks) => {
+      process.env['PLEXO_E2E_INTERFACES'] = networks
+    }, value)
+
+  test('with no network, the queue waits instead of failing every item, then carries on', async ({
+    plexo,
+    serve
+  }) => {
+    const origin = await serve({ size: 128 * 1024, seed: 81 })
+    await setNetworks(plexo, '')
+    await plexo.api.addToQueue(
+      [{ url: origin.url('/files/first.bin') }, { url: origin.url('/files/second.bin') }],
+      { start: true }
+    )
+    const waiting = await waitForQueue(plexo, (queue) => queue.waitingForNetwork)
+    expect(waiting.items.map((item) => [item.status, item.attempts])).toEqual([
+      ['queued', 0],
+      ['queued', 0]
+    ])
+
+    await setNetworks(plexo, interfacesEnv(NETWORKS))
+    const queue = await waitForQueue(plexo, (state) =>
+      state.items.every((item) => item.status === 'completed')
+    )
+    expect(queue.waitingForNetwork).toBe(false)
+    for (const item of queue.items) await expectSavedAs(item, origin)
+  })
+
+  test('a folder that can’t be saved to stops the queue with the reason, failing nothing', async ({
+    plexo,
+    serve,
+    dirs
+  }) => {
+    const origin = await serve({ size: 64 * 1024, seed: 82 })
+    const notAFolder = join(dirs.dest, 'not-a-folder')
+    await writeFile(notAFolder, 'x')
+    await plexo.api.queueCommand({ kind: 'setDestination', dir: join(notAFolder, 'inside') })
+    await plexo.api.addToQueue(
+      [{ url: origin.url('/files/first.bin') }, { url: origin.url('/files/second.bin') }],
+      { start: true }
+    )
+    const stopped = await waitForQueue(plexo, (queue) => !!queue.stoppedBecause)
+    expect(stopped.running).toBe(false)
+    expect(stopped.stoppedBecause).toMatch(/^Can’t save to .*inside: /)
+    expect(stopped.items.map((item) => [item.status, item.attempts])).toEqual([
+      ['queued', 0],
+      ['queued', 0]
+    ])
+
+    // Another folder, and the queue goes on from where it stopped.
+    await rm(notAFolder)
+    await plexo.api.queueCommand({ kind: 'setDestination', dir: dirs.dest })
+    await plexo.api.queueCommand({ kind: 'start' })
+    const queue = await waitForQueue(plexo, (state) =>
+      state.items.every((item) => item.status === 'completed')
+    )
+    expect(queue.stoppedBecause).toBeUndefined()
+  })
+
+  test('a failure a moment could fix is retried shortly, in its place; one that can’t, isn’t', async ({
+    plexo,
+    serve
+  }) => {
+    const flaky = await serve({ size: 64 * 1024, seed: 83 })
+    // Busy for its first two looks (the background lookup and the first start), fine after.
+    let busy = 2
+    flaky.setRule((request) =>
+      request.range?.end === 0 && busy-- > 0 ? { status: 503 } : undefined
+    )
+    const refused = await serve({ size: 64 * 1024, seed: 84 })
+    refused.setRule(() => ({ status: 400 }))
+    const next = await serve({ size: 64 * 1024, seed: 85 })
+    await plexo.api.addToQueue(
+      [
+        { url: flaky.url('/files/flaky.bin') },
+        { url: refused.url('/files/refused.bin') },
+        { url: next.url('/files/next.bin') }
+      ],
+      { start: true }
+    )
+    const queue = await waitForQueue(plexo, (state) => allDone(state) && !state.items[0].retryAt)
+    // Still first in the list, done on its second try, after the others had their turn.
+    expect(queue.items.map((item) => [item.status, item.attempts])).toEqual([
+      ['completed', 2],
+      ['failed', 1],
+      ['completed', 1]
+    ])
+    await expectSavedAs(queue.items[0], flaky)
+    const nextStarted = Math.min(...next.chunkRequests().map((request) => request.at))
+    const flakyStarted = Math.min(...flaky.chunkRequests().map((request) => request.at))
+    expect(nextStarted).toBeLessThan(flakyStarted)
+  })
+
+  test('pausing the queue while the next link is being checked doesn’t start it', async ({
+    plexo,
+    serve
+  }) => {
+    const origin = await serve({ size: 256 * 1024, seed: 86 })
+    // A link that answers only when the test lets it: long enough to pause in between.
+    let letGo: () => void = () => {}
+    const answered = new Promise<void>((resolve) => (letGo = resolve))
+    const slow = createServer((req, res) => {
+      void answered.then(() => {
+        res.writeHead(302, { Location: origin.url(req.url ?? '/') }).end()
+      })
+    })
+    await new Promise<void>((resolve) => slow.listen(0, '127.0.0.1', resolve))
+    try {
+      const { port } = slow.address() as AddressInfo
+      await plexo.api.addToQueue([{ url: `http://127.0.0.1:${port}/files/held.bin` }], {
+        start: true
+      })
+      await waitForQueue(plexo, (queue) => queue.items[0]?.status === 'starting')
+      // Stopping waits for the check under way, so the link answers once the queue is stopped.
+      const stopping = plexo.api.queueCommand({ kind: 'stop' })
+      await waitForQueue(plexo, (queue) => !queue.running)
+      letGo()
+      await stopping
+
+      const queue = await waitForQueue(plexo, (state) => state.items[0]?.status === 'queued')
+      expect(queue.running).toBe(false)
+      expect(queue.items[0].attempts).toBe(0)
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      expect(await plexo.current()).toBeNull()
+      expect(origin.chunkRequests()).toEqual([])
+    } finally {
+      letGo()
+      slow.closeAllConnections()
+      slow.close()
+    }
+  })
+
+  test('New Download on a failed queue download’s screen keeps what it fetched, for Retry', async ({
+    plexo,
+    serve
+  }) => {
+    const size = 1024 * 1024
+    const origin = await serve({ size, seed: 87, bytesPerSecond: 150_000 })
+    let refusing = false
+    origin.setRule((request) =>
+      refusing && request.range && request.range.end !== 0 ? { status: 403 } : undefined
+    )
+    await plexo.api.addToQueue([{ url: origin.url('/files/kept.bin') }], { start: true })
+    await waitForQueue(plexo, (queue) => (queue.items[0]?.bytesDownloaded ?? 0) > size / 4)
+    refusing = true
+    const failed = await waitForQueue(plexo, (queue) => queue.items[0]?.status === 'failed')
+    const kept = failed.items[0].bytesDownloaded ?? 0
+
+    await plexo.page.getByRole('button', { name: 'New Download' }).click()
+    await expect(plexo.page.getByRole('button', { name: 'Start' })).toBeVisible()
+
+    refusing = false
+    const retriedAt = Date.now()
+    await plexo.api.queueCommand({ kind: 'retry', id: failed.items[0].id })
+    const [item] = (await waitForQueue(plexo, (queue) => queue.items[0]?.status === 'completed'))
+      .items
+    await expectSavedAs(item, origin)
+    const fetchedAgain = origin
+      .chunkRequests()
+      .filter((request) => request.at >= retriedAt)
+      .reduce((sum, request) => sum + request.bytesSent, 0)
+    expect(fetchedAgain).toBeLessThanOrEqual(size - kept + 256 * 1024)
   })
 })

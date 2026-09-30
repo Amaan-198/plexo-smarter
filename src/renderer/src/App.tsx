@@ -83,8 +83,16 @@ function App(): React.JSX.Element {
   }, [checkForUpdate])
 
   const handleNewDownload = (): void => {
-    if (currentDownload) void window.plexo.removeDownload(currentDownload.id)
+    const current = currentDownload
     clearCurrentDownload()
+    if (!current) return
+    // A failed queue item's download holds what it fetched, for the item's Retry to pick up:
+    // moving on from its screen leaves it be.
+    const queued = useAppStore
+      .getState()
+      .queue?.items.some((item) => item.downloadId === current.id)
+    if (current.status === 'error' && queued) return
+    void window.plexo.removeDownload(current.id)
   }
 
   const handleDownloadAgain = (): void => {
