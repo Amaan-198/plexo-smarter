@@ -177,6 +177,18 @@ test('a download started in the browser is handed to Plexo with its session', as
       expect(request.headers['user-agent']).toBe(fromBrowser.headers['user-agent'])
     }
 
+    // The toolbar popup shows the queue live: the finished file, and, once it's removed in
+    // Plexo, not any more.
+    const popup = await browser.context.newPage()
+    await popup.goto(`chrome-extension://${browser.extensionId}/popup.html`)
+    const row = popup.locator('#queue li')
+    await expect(row).toHaveCount(1)
+    await expect(row).toContainText('big.bin')
+    await expect(row).toContainText('Done')
+    await plexo.api.queueCommand({ kind: 'remove', id: item.id })
+    await expect(row).toHaveCount(0)
+    await expect(popup.locator('#queue-empty')).toBeVisible()
+
     // And the browser's own copy is gone from its list.
     await expect
       .poll(() =>

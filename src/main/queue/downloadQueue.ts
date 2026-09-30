@@ -170,6 +170,16 @@ function sanitizeStoredItem(value: unknown): StoredItem | null {
   }
 }
 
+/** A name for a link whose file name isn't known yet: the last part of its path. */
+function nameFromUrl(url: string): string {
+  try {
+    const path = decodeURIComponent(new URL(url).pathname)
+    return path.split('/').filter(Boolean).pop() || url
+  } catch {
+    return url
+  }
+}
+
 const sameName = (a: string | undefined, b: string | undefined): boolean =>
   !!a && !!b && a.toLowerCase() === b.toLowerCase()
 
@@ -281,6 +291,43 @@ export class DownloadQueue {
   }
 
   // --- what the window sees -------------------------------------------------------------------
+
+  /**
+   * The queue as the browser extension shows it: what each item is called and where it's at,
+   * live. Nothing else — no links, paths or sessions — leaves for the browser.
+   */
+  async browserView(): Promise<{
+    running: boolean
+    items: {
+      id: string
+      name: string
+      status: QueueItem['status']
+      problem?: QueueItemProblem
+      totalBytes: number
+      bytesDownloaded: number
+      speedBytesPerSec: number
+      paused: boolean
+    }[]
+  }> {
+    await this.loaded
+    const current = await this.manager?.currentState()
+    return {
+      running: this.running,
+      items: this.items.map((item) => {
+        const live = item.status === 'active' && current?.id === item.downloadId ? current : null
+        return {
+          id: item.id,
+          name: item.fileName || nameFromUrl(item.url),
+          status: item.status,
+          problem: item.problem,
+          totalBytes: live?.totalBytes || item.totalBytes || 0,
+          bytesDownloaded: live?.bytesDownloaded ?? item.bytesDownloaded ?? 0,
+          speedBytesPerSec: live?.status === 'downloading' ? live.speedBytesPerSec : 0,
+          paused: live?.status === 'paused'
+        }
+      })
+    }
+  }
 
   getState(): QueueState {
     return {

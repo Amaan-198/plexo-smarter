@@ -277,7 +277,7 @@ The extension lives in [`extension/`](extension/). Load it once:
 2. **Load unpacked** → pick the `extension` folder of this repository.
 3. Its settings page opens: with Plexo running, click **Connect to Plexo**, then **Allow** in Plexo's window.
 
-From then on, a download you start on a site on the extension's list (by default `filekeeper.net`) is paused, handed to Plexo with the browser's cookies for it, and removed from the browser. If Plexo isn't running, or can't take it, the browser simply downloads it as usual. The list and an optional size threshold ("any download over 100 MB") are in the extension's settings; right-click → **Download with Plexo** works on any link.
+From then on, a download you start on a site on the extension's list (by default `filekeeper.net`) is paused, handed to Plexo with the browser's cookies for it, and removed from the browser. If Plexo isn't running, or can't take it, the browser simply downloads it as usual. The site list is in the extension's settings; right-click → **Download with Plexo** works on any link. The extension's toolbar popup shows Plexo's queue live.
 
 **How it connects**: Plexo listens on `127.0.0.1:47513` only. It refuses requests from web pages (by `Origin`) and via DNS rebinding (by `Host`), and only queues downloads from a browser the user allowed in Plexo's window, which holds a token (stored hashed on Plexo's side). **Disconnect** at the bottom of the queue forgets every browser. If another app has the port, start Plexo with `PLEXO_BRIDGE_PORT` set to a free one and set the same port in the extension's settings.
 

@@ -239,11 +239,16 @@ test.describe('browser extension endpoint @smoke', () => {
     expect((await asking).status).toBe(403)
 
     // Allowed: the token works, and nothing was queued by any of the above.
+    // Not connected: the queue isn't readable either.
+    expect((await browser.request('/v1/queue', { method: 'GET' })).status).toBe(401)
+
     await browser.pair(plexo)
     const status = await browser.request('/v1/status', { method: 'GET' })
     expect(await status.json()).toMatchObject({ app: 'plexo', paired: true })
     expect((await queueOf(plexo)).items).toEqual([])
     expect((await queueOf(plexo)).bridge.pairedCount).toBe(1)
+    const live = await browser.request('/v1/queue', { method: 'GET' })
+    expect(await live.json()).toEqual({ running: false, items: [] })
   })
 
   test('a captured download carries its browser session to every request, and only to its own host', async ({

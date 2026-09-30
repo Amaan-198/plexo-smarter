@@ -9,18 +9,12 @@ export const DEFAULTS = {
   port: DEFAULT_PORT,
   /** Given by Plexo once the user allows this browser (see pair). */
   token: null,
-  /** Send downloads from these sites (and their subdomains)… */
-  useAllowlist: true,
+  /** Downloads from these sites (and their subdomains, and their pages) go to Plexo. */
   allowlist: ['filekeeper.net'],
-  /** …and/or any download at least this big. */
-  useSizeThreshold: false,
-  minSizeMB: 100,
   /** Take handed-over downloads off the browser's own download list. */
   eraseHandedOver: true,
   /** Say on the page (or in a notification) that a download went to Plexo, or why it didn't. */
-  showConfirmation: true,
-  /** The last few downloads handed over, newest first, for the popup. */
-  recent: []
+  showConfirmation: true
 }
 
 export async function loadSettings() {
@@ -123,6 +117,11 @@ export async function connectionStatus(settings) {
   }
 }
 
+/** Plexo's queue, live: each item's name and where it's at (see the app's browserView). */
+export function fetchQueue(settings) {
+  return plexoFetch('/v1/queue', { port: settings.port, token: settings.token, timeoutMs: 2000 })
+}
+
 /**
  * Asks Plexo to let this browser send downloads. Plexo shows the question in its own window and
  * holds the request open until the user answers, so this takes as long as they do. Run it from
@@ -153,4 +152,16 @@ export function formatAge(ms) {
   if (minutes < 60) return `${minutes}m ago`
   const hours = Math.floor(minutes / 60)
   return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`
+}
+
+/** How much of a long file name's end always stays in view (see splitName). */
+const NAME_TAIL = 16
+
+/** A file name as a head, which may be cut short with an ellipsis, and a tail that never is —
+ * so "TheWitcher3WildHuntRemastered[DODIRepack].part03.rar" shows as
+ * "TheWitcher3Wild…[DODIRepack].part03.rar" rather than losing the part number. */
+export function splitName(name) {
+  return name.length <= NAME_TAIL + 4
+    ? { head: name, tail: '' }
+    : { head: name.slice(0, -NAME_TAIL), tail: name.slice(-NAME_TAIL) }
 }

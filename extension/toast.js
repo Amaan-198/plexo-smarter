@@ -84,8 +84,11 @@ function renderToast(message, showMs) {
     .title { font-weight: 600; font-size: 13px; letter-spacing: -0.005em; }
     .detail {
       margin-top: 2px; font: 12px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
-      color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      color: var(--text); display: flex; min-width: 0;
     }
+    /* A long name loses its middle, never its end ("…part03.rar"). */
+    .detail .head { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .detail .tail { flex: none; white-space: pre; }
     .note { margin-top: 3px; font-size: 12px; color: var(--muted); }
     .close {
       position: absolute; top: 8px; right: 8px; width: 24px; height: 24px; border: 0;
@@ -139,8 +142,15 @@ function renderToast(message, showMs) {
   if (message.detail) {
     const detail = document.createElement('div')
     detail.className = 'detail'
-    detail.textContent = message.detail
     detail.title = message.detail
+    const cut = message.detail.length > 20 ? message.detail.length - 16 : message.detail.length
+    const head = document.createElement('span')
+    head.className = 'head'
+    head.textContent = message.detail.slice(0, cut)
+    const tail = document.createElement('span')
+    tail.className = 'tail'
+    tail.textContent = message.detail.slice(cut)
+    detail.append(head, tail)
     text.append(detail)
   }
   if (message.note) {

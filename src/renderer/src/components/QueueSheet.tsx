@@ -20,8 +20,8 @@ import {
 import { useEffect, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { formatBytes, formatEta, formatSpeed, toDisplayPath } from '../utils/format'
+import { FileNameText } from './FileNameText'
 import { ScreenFooter } from './ScreenFooter'
-import { TruncatedText } from './TruncatedText'
 import { Button } from './ui/button'
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from './ui/sheet'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
@@ -288,8 +288,8 @@ function QueueRow({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
-          <TruncatedText
-            text={name}
+          <FileNameText
+            name={name}
             tooltipText={item.destinationPath ? toDisplayPath(item.destinationPath, homeDir) : name}
             className="min-w-0 font-sans text-[12.5px] font-semibold text-foreground"
           />

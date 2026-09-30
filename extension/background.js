@@ -19,7 +19,8 @@ const MENU_ID = 'plexo-download-link'
 /** How long to wait for the browser to settle a download's file name before sending without it
  * (Plexo then takes the server's name). */
 const FILENAME_WAIT_MS = 1500
-const RECENT_LIMIT = 5
+/** Settings earlier versions kept, and nothing reads any more. */
+const RETIRED_SETTINGS = ['recent', 'useAllowlist', 'useSizeThreshold', 'minSizeMB']
 
 /** Downloads being handed over right now, so a second event for one isn't acted on twice. */
 const handling = new Set()
@@ -30,6 +31,7 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
     chrome.contextMenus.create({ id: MENU_ID, title: 'Download with Plexo', contexts: ['link'] })
   })
   if (reason === 'install') chrome.runtime.openOptionsPage()
+  void chrome.storage.local.remove(RETIRED_SETTINGS)
 })
 
 chrome.downloads.onCreated.addListener((item) => {
@@ -41,14 +43,10 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   void sendLink(info.linkUrl, tab?.url ?? info.pageUrl, tab?.incognito === true, tab?.id)
 })
 
-/** Whether the user's rules say this download goes to Plexo. */
+/** Whether it's from a site on the user's list: its link, or the page it was started from. */
 function wanted(item, settings) {
   const hosts = [item.finalUrl, item.url, item.referrer].map(hostOf)
-  if (settings.useAllowlist && hosts.some((host) => onAllowlist(host, settings.allowlist))) {
-    return true
-  }
-  const size = knownSize(item)
-  return settings.useSizeThreshold && size > 0 && size >= settings.minSizeMB * 1024 * 1024
+  return hosts.some((host) => onAllowlist(host, settings.allowlist))
 }
 
 function knownSize(item) {
@@ -134,16 +132,6 @@ async function handOver(settings, link) {
     body: { items: [{ ...link, userAgent: navigator.userAgent }] }
   })
   const name = link.fileName || baseName(new URL(link.url).pathname) || link.url
-  const recent = [
-    {
-      name,
-      at: Date.now(),
-      refreshed: result.refreshed > 0,
-      duplicate: result.added === 0 && result.refreshed === 0
-    },
-    ...settings.recent
-  ].slice(0, RECENT_LIMIT)
-  await saveSettings({ recent })
   await flashBadge('✓', '#1f8a70', `Sent to Plexo: ${name}`)
   if (result.refreshed > 0) {
     return {

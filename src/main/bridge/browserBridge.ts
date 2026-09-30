@@ -207,6 +207,12 @@ export class BrowserBridge {
       }
       if (req.method === 'POST' && path === '/v1/pair') return await this.pair(req, res)
       if (req.method === 'POST' && path === '/v1/downloads') return await this.add(req, res)
+      if (req.method === 'GET' && path === '/v1/queue') {
+        if (!this.authorized(req)) {
+          throw new HttpError(401, 'This browser isn’t connected to Plexo')
+        }
+        return send(res, 200, await this.queue.browserView())
+      }
       throw new HttpError(404, 'Not found')
     } catch (error) {
       if (res.headersSent) return

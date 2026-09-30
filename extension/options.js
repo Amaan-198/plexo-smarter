@@ -82,25 +82,15 @@ async function connect() {
   await refreshStatus()
 }
 
-function syncEnabledState() {
-  $('allowlist-box').setAttribute('aria-disabled', String(!$('useAllowlist').checked))
-  $('size-box').setAttribute('aria-disabled', String(!$('useSizeThreshold').checked))
-}
-
 async function init() {
   const settings = await loadSettings()
-  $('useAllowlist').checked = settings.useAllowlist
   $('allowlist').value = settings.allowlist.join('\n')
-  $('useSizeThreshold').checked = settings.useSizeThreshold
-  $('minSizeMB').value = String(settings.minSizeMB)
   $('eraseHandedOver').checked = settings.eraseHandedOver
   $('showConfirmation').checked = settings.showConfirmation
   $('port').value = String(settings.port)
-  syncEnabledState()
 
-  for (const id of ['useAllowlist', 'useSizeThreshold', 'eraseHandedOver', 'showConfirmation']) {
+  for (const id of ['eraseHandedOver', 'showConfirmation']) {
     $(id).addEventListener('change', (event) => {
-      syncEnabledState()
       void save({ [id]: event.target.checked })
     })
   }
@@ -110,12 +100,6 @@ async function init() {
     ]
     event.target.value = allowlist.join('\n')
     void save({ allowlist })
-  })
-  $('minSizeMB').addEventListener('change', (event) => {
-    const value = Math.round(Number(event.target.value))
-    const minSizeMB = Number.isFinite(value) && value >= 1 ? value : 100
-    event.target.value = String(minSizeMB)
-    void save({ minSizeMB })
   })
   $('port').addEventListener('change', async (event) => {
     const value = Math.round(Number(event.target.value))
