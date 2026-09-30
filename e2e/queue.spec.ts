@@ -269,7 +269,7 @@ test.describe('browser extension endpoint @smoke', () => {
     serve,
     dirs
   }) => {
-    const origin = await serve({ size: 800 * 1024, seed: 11 })
+    const origin = await serve({ size: 800 * 1024, seed: 11, bytesPerSecond: 200_000 })
     // A session link: without the browser's cookie, the server turns every request away.
     origin.setRule((request) =>
       /(^|; )sid=secret(;|$)/.test(request.headers.cookie ?? '') ? undefined : { status: 403 }
@@ -317,6 +317,25 @@ test.describe('browser extension endpoint @smoke', () => {
     ])
     expect(result.added).toBe(1)
 
+    // The session never leaves the main process. While it's needed, it is kept encrypted on disk
+    // as the browser keeps it (where the system has a store for secrets to encrypt with); once
+    // the file is saved, it isn't kept at all.
+    const running = await waitForQueue(plexo, (state) => !!state.items[0]?.downloadId)
+    const files = [
+      join(dirs.userData, 'queue.json'),
+      join(dirs.userData, 'downloads', running.items[0].downloadId!, 'manifest.json')
+    ]
+    const encrypted = await plexo.evaluateMain(
+      ({ safeStorage }) => safeStorage.isEncryptionAvailable(),
+      null
+    )
+    if (encrypted) {
+      for (const file of files) {
+        await expect.poll(() => readFile(file, 'utf-8')).toContain('"sealed"')
+        expect(await readFile(file, 'utf-8')).not.toContain('secret')
+      }
+    }
+
     const queue = await waitForQueue(plexo, allDone)
     const [item] = queue.items
     expect(item).toMatchObject({ source: 'browser', hasSession: true })
@@ -324,15 +343,9 @@ test.describe('browser extension endpoint @smoke', () => {
     expect(item.fileName).toBe('session file.bin')
     await expectSavedAs(item, origin)
 
-    // The session never leaves the main process, and is kept encrypted on disk as the browser
-    // keeps it (where the system has a store for secrets to encrypt with).
     expect(JSON.stringify(queue)).not.toContain('secret')
-    if (await plexo.evaluateMain(({ safeStorage }) => safeStorage.isEncryptionAvailable(), null)) {
-      const manifest = join(dirs.userData, 'downloads', item.downloadId!, 'manifest.json')
-      for (const file of [join(dirs.userData, 'queue.json'), manifest]) {
-        await expect.poll(() => readFile(file, 'utf-8')).toContain('"sealed"')
-        expect(await readFile(file, 'utf-8')).not.toContain('secret')
-      }
+    for (const file of files) {
+      await expect.poll(() => readFile(file, 'utf-8')).not.toMatch(/"sealed"|secret/)
     }
 
     expect(origin.log.length).toBeGreaterThan(1)

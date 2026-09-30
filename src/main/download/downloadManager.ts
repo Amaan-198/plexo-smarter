@@ -2402,7 +2402,11 @@ export class DownloadManager {
           publicationIdentity: runtime.publicationIdentity,
           requestPayload: {
             ...runtime.requestPayload,
-            context: seal(runtime.requestPayload.context)
+            // A finished download's session is no use any more: it isn't kept on disk.
+            context:
+              runtime.state.status === 'completed'
+                ? undefined
+                : seal(runtime.requestPayload.context)
           },
           parked: runtime.parked || undefined,
           activeAt: runtime.activeAt

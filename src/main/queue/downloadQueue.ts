@@ -644,6 +644,8 @@ export class DownloadQueue {
       case 'completed':
         if (item.status === 'completed') return
         this.finish(item, 'completed')
+        // Its browser session did its job: nothing needs it any more, so it isn't kept.
+        item.context = undefined
         item.finishedAt = state.completedAt ?? item.finishedAt
         item.destinationPath = state.destinationPath
         item.fileName = state.fileName
