@@ -33,6 +33,32 @@ export interface ProbeResult {
   /** Strong validators, used to detect if the remote content changes between pause and resume. */
   etag: string | null
   lastModified: string | null
+  /** The server named the file (Content-Disposition), i.e. meant it as a download. */
+  attachment: boolean
+}
+
+/** A cookie as the browser holds it — the fields of chrome.cookies.Cookie a request needs. */
+export interface BrowserCookie {
+  name: string
+  value: string
+  /** With a leading dot or without; what matters is `hostOnly`. */
+  domain: string
+  path: string
+  secure: boolean
+  /** Sent to exactly `domain`, not to its subdomains. */
+  hostOnly: boolean
+  /** Seconds since the epoch. Absent for a session cookie. */
+  expirationDate?: number
+}
+
+/** What a download's requests carry besides the URL, so a link that belongs to a browser session
+ * (a file host's "secure session link") is fetched the way the browser would fetch it. */
+export interface RequestContext {
+  /** The page the link was on, sent as Referer. */
+  referrer?: string
+  /** The browser's own User-Agent, for hosts that tie a link to it. */
+  userAgent?: string
+  cookies?: BrowserCookie[]
 }
 
 export type DownloadStatus = 'downloading' | 'paused' | 'completed' | 'error' | 'cancelled'
@@ -211,4 +237,100 @@ export interface StartDownloadRequest {
   lastModified: string | null
   /** Streams per network the user picked; left out, the count is decided automatically. */
   streamsPerNetwork?: number
+  /** Cookies, Referer and User-Agent every request sends (see RequestContext). */
+  context?: RequestContext
+}
+
+/**
+ * - queued: waiting its turn.
+ * - starting: being checked (probed) and started.
+ * - active: its download is the current one — running or paused.
+ * - completed / failed: done, either way. A failed one may keep what it downloaded, to resume
+ *   from once it is retried.
+ */
+export type QueueItemStatus = 'queued' | 'starting' | 'active' | 'completed' | 'failed'
+
+/** Why a queue item failed: `expired` means the link stopped working (a file host's session link
+ * ran out, or it now leads to a web page) and a fresh one from the same page fixes it. */
+export type QueueItemProblem = 'expired' | 'cancelled' | 'other'
+
+export interface QueueItem {
+  id: string
+  url: string
+  /** The name to save it as; the server's name when unset. */
+  fileName?: string
+  source: 'paste' | 'browser'
+  /** The page the link came from — where a fresh link can be had once this one expires. */
+  pageUrl?: string
+  /** The link carries a browser session (cookies) with it. */
+  hasSession: boolean
+  addedAt: number
+  /** When the link was captured, or last refreshed: how old it is. */
+  linkAt: number
+  status: QueueItemStatus
+  /** 0 or unset: not known yet. */
+  totalBytes?: number
+  bytesDownloaded?: number
+  /** Its download in the download manager, while it has one. */
+  downloadId?: string
+  /** Where the finished file was saved. */
+  destinationPath?: string
+  error?: string
+  problem?: QueueItemProblem
+  /** Downloads started for it, retries included. */
+  attempts: number
+}
+
+export interface BrowserBridgeState {
+  status: 'starting' | 'listening' | 'error'
+  port: number
+  error?: string
+  /** Browsers allowed to send downloads. */
+  pairedCount: number
+  /** A browser asking to be allowed, waiting on the user. */
+  pairRequest?: { id: string; client: string }
+}
+
+export interface QueueState {
+  /** Starts the next item whenever nothing is downloading. Stopped after a relaunch. */
+  running: boolean
+  /** Every item is saved here. */
+  destinationDir: string
+  /** The current download is one of the user's own that failed: the queue waits until they
+   * resume it or move on, rather than sweeping it away. */
+  blocked: boolean
+  items: QueueItem[]
+  bridge: BrowserBridgeState
+}
+
+/** A link to queue, as pasted or sent by the browser extension. */
+export interface QueueLink {
+  url: string
+  fileName?: string
+  /** The page the link was found on, when known more fully than its Referer (a browser sends a
+   * link on another site only the page's origin). */
+  pageUrl?: string
+  context?: RequestContext
+  totalBytes?: number
+}
+
+export type QueueCommand =
+  | { kind: 'start' }
+  | { kind: 'stop' }
+  | { kind: 'retry'; id: string }
+  | { kind: 'retryFailed' }
+  | { kind: 'remove'; id: string }
+  | { kind: 'move'; id: string; offset: -1 | 1 }
+  | { kind: 'clearFinished' }
+  | { kind: 'openPage'; id: string }
+  | { kind: 'setDestination'; dir: string }
+  | { kind: 'answerPair'; id: string; allow: boolean }
+  | { kind: 'forgetBrowsers' }
+
+export interface AddLinksResult {
+  added: number
+  /** Already in the queue and not finished. */
+  duplicates: number
+  /** Refreshed an item waiting on a fresh link, rather than adding a new one. */
+  refreshed: number
 }

@@ -1,9 +1,11 @@
 import type { Writable } from 'node:stream'
 import type { ClientRequest, IncomingMessage } from 'node:http'
 import { URL } from 'node:url'
+import type { RequestContext } from '../../shared/types'
 import { asConnectionError, type StreamConnection } from '../network/routes'
 import { testKnobs } from '../testKnobs'
 import { compareVersion, type FileVersion, type VersionCheck } from './fileVersion'
+import { requestHeaders } from './requestContext'
 
 export interface ChunkDownloadOptions {
   url: string
@@ -20,6 +22,8 @@ export interface ChunkDownloadOptions {
   signal: AbortSignal
   /** The version the download started on, plus any confirmed to serve identical bytes. */
   acceptedVersions: FileVersion[]
+  /** Cookies, Referer and User-Agent to send, worked out for each hop of a redirect. */
+  context?: RequestContext
   /** Called once the server has answered with usable headers: how long that took, and whether
    * the request went out on a connection an earlier one had already warmed up. */
   onResponse?: (info: { ttfbMs: number; reusedSocket: boolean }) => void
@@ -129,7 +133,8 @@ export function downloadChunk(options: ChunkDownloadOptions): Promise<void> {
     onProgress,
     signal,
     acceptedVersions,
-    onResponse
+    onResponse,
+    context
   } = options
 
   return new Promise((resolve, reject) => {
@@ -190,15 +195,14 @@ export function downloadChunk(options: ChunkDownloadOptions): Promise<void> {
 
     // The whole file from the start needs no Range at all — and an empty file would answer
     // `bytes=0-` with 416, since it has no byte 0 to start from.
-    const headers: Record<string, string> = { 'User-Agent': 'Plexo/1.0' }
-    if (rangeStart > 0 || rangeEnd !== null) {
-      headers['Range'] =
-        rangeEnd === null ? `bytes=${rangeStart}-` : `bytes=${rangeStart}-${rangeEnd}`
-    }
+    const range: Record<string, string> =
+      rangeStart > 0 || rangeEnd !== null
+        ? { Range: rangeEnd === null ? `bytes=${rangeStart}-` : `bytes=${rangeStart}-${rangeEnd}` }
+        : {}
 
     const attempt = (targetUrl: URL, redirectsLeft: number): void => {
       void connection
-        .request(targetUrl, headers, signal)
+        .request(targetUrl, { ...requestHeaders(targetUrl, context), ...range }, signal)
         .then(({ req, res, sentAt }) => {
           if (settled) {
             req.destroy()
@@ -349,12 +353,13 @@ export function fetchRange(
   url: string,
   start: number,
   end: number,
-  connection: StreamConnection
+  connection: StreamConnection,
+  context?: RequestContext
 ): Promise<{ body: Buffer; version: FileVersion }> {
   return new Promise((resolve, reject) => {
     const attempt = (target: URL, redirectsLeft: number): void => {
       void connection
-        .request(target, { 'User-Agent': 'Plexo/1.0', Range: `bytes=${start}-${end}` })
+        .request(target, { ...requestHeaders(target, context), Range: `bytes=${start}-${end}` })
         .then(({ req, res }) => {
           req.on('error', reject)
           const status = res.statusCode ?? 0

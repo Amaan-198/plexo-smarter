@@ -76,6 +76,8 @@ File ──→ Split ─────┤                                  ├─�
 - 🔁 **Automatic retry with backoff** — failed chunks go back to the queue and are retried with jittered exponential backoff (1s–15s). A dropped connection is retried for as long as its network is there; a busy server (429, 503, …) is waited out, honouring `Retry-After`; a server that answers wrongly gets 5 retries.
 - 🔄 **Network changes and sleep** — a network that gets a new address, or a computer that wakes from sleep, gets its connections going again at once instead of waiting out a backoff; the computer is kept awake while a download runs.
 - 💤 **Stall detection & watchdog** — automatically drops and re-queues connections that remain open but silent (>20s without incoming data, not counting time spent waiting on the disk).
+- 📋 **Download queue** — paste many links at once (one per line); they download one after another into one folder, each over every network. The queue survives a relaunch, retries what failed, and says clearly when a link has expired. See [Download queue and browser extension](#download-queue-and-browser-extension).
+- 🧩 **Browser extension** — for Edge and Chrome: downloads you start in the browser go to Plexo's queue instead, with the browser's session (cookies, Referer, User-Agent) so session-bound links from file hosts keep working.
 - 🔔 **Desktop notifications** — native desktop alerts when downloads complete or encounter errors.
 - 💾 **Upfront disk-space verification** — checks the destination volume before writing the staging file.
 - 🔀 **Mid-download redirect handling** — transparently follows 3xx HTTP redirects (up to 5 hops) during probing and individual chunk downloads.
@@ -253,6 +255,37 @@ Start the application in development mode:
 ```bash
 npm run dev
 ```
+
+---
+
+## Download queue and browser extension
+
+### Queue
+
+Paste several links into the link field (or use **Add several links** at the bottom of the start screen) and they go to the queue, opened from the list icon in the title bar. Files download **one at a time** — a single file already has every network to itself, so two at once would only split them — into the queue's own folder.
+
+- **Order**: hover a waiting item to move it up or down, or remove it.
+- **Failures**: a failure that isn't the link's fault (a server error, a disk hiccup) gets one automatic retry at the back of the queue. Anything else waits for **Retry**. A failed download keeps what it fetched, so a retry picks up where it stopped.
+- **Expired links**: a link answering `401`/`403`/`404`/`410`, or leading to a web page instead of the file, is marked _expired_. For a link captured from the browser, **Get a new link** opens its page; click the download button there again and the extension sends the fresh link, which refreshes the same queue item — it keeps its place and resumes where it stopped (Plexo checks the new link serves the same file first).
+- **Relaunch**: the queue comes back **stopped**, with its current download paused, as any interrupted download is. **Resume queue** carries on.
+
+### Browser extension (Edge / Chrome)
+
+The extension lives in [`extension/`](extension/). Load it once:
+
+1. Open `edge://extensions` (or `chrome://extensions`) and turn on **Developer mode**.
+2. **Load unpacked** → pick the `extension` folder of this repository.
+3. Its settings page opens: with Plexo running, click **Connect to Plexo**, then **Allow** in Plexo's window.
+
+From then on, a download you start on a site on the extension's list (by default `filekeeper.net`) is paused, handed to Plexo with the browser's cookies for it, and removed from the browser. If Plexo isn't running, or can't take it, the browser simply downloads it as usual. The list and an optional size threshold ("any download over 100 MB") are in the extension's settings; right-click → **Download with Plexo** works on any link.
+
+**How it connects**: Plexo listens on `127.0.0.1:47513` only. It refuses requests from web pages (by `Origin`) and via DNS rebinding (by `Host`), and only queues downloads from a browser the user allowed in Plexo's window, which holds a token (stored hashed on Plexo's side). **Disconnect** at the bottom of the queue forgets every browser. If another app has the port, start Plexo with `PLEXO_BRIDGE_PORT` set to a free one and set the same port in the extension's settings.
+
+**Things to know about session links**:
+
+- The browser's cookies are sent only where the browser would send them (matching domain, path and `https`), so a redirect to another host never receives them. Plexo keeps them with the download (in its app data) until the download is removed.
+- Some file hosts tie a link to the IP address it was requested from. Each network has its own public address, so on such a host the other networks' requests are refused: Plexo marks those networks failed and finishes over the one that works. That download is then no faster than the browser, but it still completes.
+- Session links can expire while they wait in the queue. How long they last depends on the host; if one expires, refresh it as described above.
 
 ---
 

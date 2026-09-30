@@ -1,6 +1,6 @@
 import type { ProbeResult } from '@shared/types'
 import { cn } from 'cn'
-import { AlertTriangle, ClipboardPaste, Info } from 'lucide-react'
+import { AlertTriangle, ClipboardPaste, Info, ListPlus } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { NetworkCard } from '../components/NetworkCard'
 import { ScreenFooter } from '../components/ScreenFooter'
@@ -10,6 +10,7 @@ import { ToggleGroup, ToggleGroupItem } from '../components/ui/toggle-group'
 import { useLatencyPolling } from '../hooks/useNetworks'
 import { useAppStore } from '../store/useAppStore'
 import { describeError, formatBytes, toDisplayPath } from '../utils/format'
+import { isBatch } from '../utils/links'
 
 type StreamsChoice = 'auto' | number
 /** Streams per network the user can pick instead of Auto. */
@@ -69,6 +70,7 @@ export function IdleScreen(): React.JSX.Element {
   const setUrl = useAppStore((store) => store.setDraftUrl)
   const destinationDir = useAppStore((store) => store.destinationDir)
   const setDestinationDir = useAppStore((store) => store.setDestinationDir)
+  const openAddLinks = useAppStore((store) => store.openAddLinks)
 
   const [probe, setProbe] = useState<ProbeState>({ status: 'idle' })
   // Tracks deselections rather than selections, so a newly-detected interface starts selected.
@@ -188,7 +190,9 @@ export function IdleScreen(): React.JSX.Element {
 
   const handlePaste = async (): Promise<void> => {
     const text = await window.plexo.readClipboardText()
-    if (text.trim()) setUrl(text.trim())
+    // Several links at once are a batch: they go to the queue rather than into the one field.
+    if (isBatch(text)) openAddLinks(text)
+    else if (text.trim()) setUrl(text.trim())
   }
 
   const handleStart = async (): Promise<void> => {
@@ -231,6 +235,13 @@ export function IdleScreen(): React.JSX.Element {
               type="url"
               value={url}
               onChange={(event) => setUrl(event.target.value)}
+              onPaste={(event) => {
+                const text = event.clipboardData.getData('text')
+                if (isBatch(text)) {
+                  event.preventDefault()
+                  openAddLinks(text)
+                }
+              }}
               placeholder="https://"
               spellCheck={false}
               aria-labelledby="idle-link-label"
@@ -382,7 +393,20 @@ export function IdleScreen(): React.JSX.Element {
       </div>
 
       <ScreenFooter className="gap-2.5">
-        <div className="font-mono text-[11px] text-muted-foreground">{footerParts.join(' · ')}</div>
+        <div className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+          {footerParts.join(' · ')}
+        </div>
+        <div className="flex-1" />
+        <Button
+          type="button"
+          variant="secondary"
+          size="xs"
+          onClick={() => openAddLinks()}
+          className="shrink-0 font-mono text-[10px] tracking-wide uppercase"
+        >
+          <ListPlus data-icon="inline-start" />
+          Add several links
+        </Button>
       </ScreenFooter>
     </div>
   )

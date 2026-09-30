@@ -1,0 +1,673 @@
+import type { DownloadState, QueueItem, QueueState } from '@shared/types'
+import { cn } from 'cn'
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Cookie,
+  ExternalLink,
+  FolderOpen,
+  Link2Off,
+  ListPlus,
+  Loader2,
+  Minus,
+  Pause,
+  Play,
+  RotateCw,
+  X
+} from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { useAppStore } from '../store/useAppStore'
+import { formatBytes, formatEta, formatSpeed, toDisplayPath } from '../utils/format'
+import { ScreenFooter } from './ScreenFooter'
+import { TruncatedText } from './TruncatedText'
+import { Button } from './ui/button'
+import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from './ui/sheet'
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
+
+const labelClass =
+  'shrink-0 font-mono text-[10px] leading-none tracking-[0.14em] text-muted-foreground uppercase'
+
+function command(command: Parameters<typeof window.plexo.queueCommand>[0]): void {
+  void window.plexo.queueCommand(command).catch(() => {})
+}
+
+/** "3m ago" — how old a captured link is, which is what decides whether it still works. */
+function formatAge(ms: number): string {
+  const minutes = Math.floor(ms / 60_000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
+
+function hostOf(url: string | undefined): string | null {
+  if (!url) return null
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return null
+  }
+}
+
+function displayName(item: QueueItem): string {
+  if (item.fileName) return item.fileName
+  try {
+    const path = decodeURIComponent(new URL(item.url).pathname)
+    return path.split('/').filter(Boolean).pop() || item.url
+  } catch {
+    return item.url
+  }
+}
+
+/** The one thing an icon button does, said on hover and to a screen reader. */
+function IconAction({
+  label,
+  onClick,
+  children,
+  disabled
+}: {
+  label: string
+  onClick: () => void
+  children: React.ReactNode
+  disabled?: boolean
+}): React.JSX.Element {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label={label}
+            disabled={disabled}
+            onClick={onClick}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            {children}
+          </Button>
+        }
+      />
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** A small ring filling up with the download: the list's version of the main screen's bar. */
+function ProgressRing({
+  fraction,
+  paused
+}: {
+  fraction: number
+  paused: boolean
+}): React.JSX.Element {
+  const radius = 8.5
+  const circumference = 2 * Math.PI * radius
+  return (
+    <svg viewBox="0 0 22 22" className="size-[22px] -rotate-90" aria-hidden="true">
+      <circle cx="11" cy="11" r={radius} fill="none" stroke="var(--track-bg)" strokeWidth="2.5" />
+      <circle
+        cx="11"
+        cy="11"
+        r={radius}
+        fill="none"
+        stroke={paused ? 'var(--color-neutral)' : 'var(--color-accent)'}
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeDasharray={circumference}
+        strokeDashoffset={circumference * (1 - Math.min(1, Math.max(0, fraction)))}
+        className="transition-[stroke-dashoffset] duration-500 ease-out"
+      />
+    </svg>
+  )
+}
+
+function StatusGlyph({
+  item,
+  position,
+  live
+}: {
+  item: QueueItem
+  position: number
+  live: DownloadState | null
+}): React.JSX.Element {
+  const circle = 'flex size-[22px] shrink-0 items-center justify-center rounded-full'
+  switch (item.status) {
+    case 'queued':
+      return (
+        <div
+          className={cn(
+            circle,
+            'border-[0.5px] border-[var(--border-strong)] bg-card font-mono text-[9.5px] font-semibold tabular-nums text-[var(--text-secondary)]'
+          )}
+        >
+          {position}
+        </div>
+      )
+    case 'starting':
+      return (
+        <div className={cn(circle, 'text-[var(--color-accent)]')}>
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+        </div>
+      )
+    case 'active': {
+      const total = live?.totalBytes || item.totalBytes || 0
+      const done = live?.bytesDownloaded ?? item.bytesDownloaded ?? 0
+      return (
+        <div className={cn(circle, 'relative')}>
+          <ProgressRing
+            fraction={total > 0 ? done / total : 0}
+            paused={live?.status === 'paused'}
+          />
+          {live?.status === 'paused' && (
+            <Pause className="absolute size-2.5 fill-current text-[var(--color-neutral)]" />
+          )}
+        </div>
+      )
+    }
+    case 'completed':
+      return (
+        <div
+          className={cn(
+            circle,
+            'border-[0.5px] border-[var(--color-wifi-border)] bg-[var(--color-wifi-bg)] text-[var(--color-wifi)]'
+          )}
+        >
+          <Check className="size-3" strokeWidth={3} aria-hidden="true" />
+        </div>
+      )
+    case 'failed':
+      if (item.problem === 'expired') {
+        return (
+          <div
+            className={cn(
+              circle,
+              'border-[0.5px] border-[var(--color-usb-border)] bg-[var(--color-usb-bg)] text-[var(--color-usb-text)]'
+            )}
+          >
+            <Link2Off className="size-3" strokeWidth={2.4} aria-hidden="true" />
+          </div>
+        )
+      }
+      if (item.problem === 'cancelled') {
+        return (
+          <div
+            className={cn(
+              circle,
+              'border-[0.5px] border-[var(--color-neutral-border)] bg-[var(--color-neutral-bg)] text-[var(--color-neutral-text)]'
+            )}
+          >
+            <Minus className="size-3" strokeWidth={3} aria-hidden="true" />
+          </div>
+        )
+      }
+      return (
+        <div
+          className={cn(
+            circle,
+            'border-[0.5px] border-[var(--color-danger-border)] bg-[var(--color-danger-bg)] text-destructive'
+          )}
+        >
+          <AlertTriangle className="size-3" strokeWidth={2.4} aria-hidden="true" />
+        </div>
+      )
+  }
+}
+
+/** The line under an item's name: where it's at, in a few words. */
+function statusLine(item: QueueItem, live: DownloadState | null, now: number): React.ReactNode {
+  const size = item.totalBytes ? formatBytes(item.totalBytes) : null
+  switch (item.status) {
+    case 'queued': {
+      const parts = ['Waiting']
+      if (size) parts.push(size)
+      const host = hostOf(item.pageUrl) ?? hostOf(item.url)
+      if (item.source === 'browser') parts.push(`link ${formatAge(now - item.linkAt)}`)
+      else if (host) parts.push(host)
+      return parts.join(' · ')
+    }
+    case 'starting':
+      return 'Checking the link…'
+    case 'active': {
+      const total = live?.totalBytes || item.totalBytes || 0
+      const done = live?.bytesDownloaded ?? item.bytesDownloaded ?? 0
+      const percent = total > 0 ? `${Math.min(100, Math.floor((done / total) * 100))}%` : null
+      if (live?.status === 'paused') {
+        return ['Paused', percent ?? formatBytes(done)].join(' · ')
+      }
+      const speed = live?.speedBytesPerSec ?? 0
+      return [
+        percent ?? formatBytes(done),
+        speed > 0 ? formatSpeed(speed) : 'Connecting…',
+        total > 0 && speed > 0 ? `${formatEta(total - done, speed)} left` : null
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    }
+    case 'completed':
+      return [size, 'Saved'].filter(Boolean).join(' · ')
+    case 'failed':
+      return item.error ?? 'Failed'
+  }
+}
+
+function QueueRow({
+  item,
+  position,
+  waitingCount,
+  live,
+  now,
+  homeDir
+}: {
+  item: QueueItem
+  /** Its place among the waiting items, from 1; 0 if it isn't waiting. */
+  position: number
+  waitingCount: number
+  live: DownloadState | null
+  now: number
+  homeDir: string
+}): React.JSX.Element {
+  const expired = item.status === 'failed' && item.problem === 'expired'
+  const failed = item.status === 'failed'
+  const total = live?.totalBytes || item.totalBytes || 0
+  const done = live?.bytesDownloaded ?? item.bytesDownloaded ?? 0
+  const name = displayName(item)
+
+  return (
+    <li
+      className={cn(
+        'group relative flex animate-[plexo-row-in_220ms_ease-out] items-start gap-3 border-b-[0.5px] border-[var(--border-subtle)] px-4 py-[11px] transition-colors duration-150 hover:bg-card',
+        item.status === 'active' && 'bg-card'
+      )}
+    >
+      <div className="pt-px">
+        <StatusGlyph item={item} position={position} live={live} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <TruncatedText
+            text={name}
+            tooltipText={item.destinationPath ? toDisplayPath(item.destinationPath, homeDir) : name}
+            className="min-w-0 font-sans text-[12.5px] font-semibold text-foreground"
+          />
+          {item.hasSession && item.status !== 'completed' && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    tabIndex={0}
+                    aria-label="Uses your browser session"
+                    className="flex shrink-0 items-center rounded-sm text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  >
+                    <Cookie className="size-3" aria-hidden="true" />
+                  </span>
+                }
+              />
+              <TooltipContent>Sent with your browser session’s cookies</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+        <div
+          className={cn(
+            'mt-[3px] font-mono text-[10.5px] leading-[1.45] tabular-nums',
+            failed
+              ? expired
+                ? 'line-clamp-3 text-[var(--color-usb-text)]'
+                : 'line-clamp-3 text-destructive'
+              : 'truncate text-muted-foreground'
+          )}
+        >
+          {statusLine(item, live, now)}
+        </div>
+        {(item.status === 'active' || item.status === 'starting') && (
+          <div className="mt-[7px] h-[3px] overflow-hidden rounded-full bg-muted">
+            {item.status === 'starting' || total === 0 ? (
+              <div className="h-full w-2/5 animate-[plexo-indeterminate_1.4s_ease-in-out_infinite] rounded-full bg-[var(--color-accent)] opacity-70" />
+            ) : (
+              <div
+                className={cn(
+                  'h-full rounded-full transition-[width] duration-500 ease-out',
+                  live?.status === 'paused'
+                    ? 'bg-[var(--color-neutral)]'
+                    : 'bg-[var(--color-accent)]'
+                )}
+                style={{ width: `${Math.min(100, (done / total) * 100)}%` }}
+              />
+            )}
+          </div>
+        )}
+        {expired && item.pageUrl && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="xs"
+            onClick={() => command({ kind: 'openPage', id: item.id })}
+            className="mt-2 font-mono text-[10px] tracking-wide uppercase"
+          >
+            <ExternalLink data-icon="inline-start" />
+            Get a new link
+          </Button>
+        )}
+      </div>
+      {/* Actions show on hover or keyboard focus, so a long list stays quiet to read. */}
+      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100">
+        {item.status === 'queued' && (
+          <>
+            <IconAction
+              label="Move up"
+              disabled={position <= 1}
+              onClick={() => command({ kind: 'move', id: item.id, offset: -1 })}
+            >
+              <ChevronUp />
+            </IconAction>
+            <IconAction
+              label="Move down"
+              disabled={position >= waitingCount}
+              onClick={() => command({ kind: 'move', id: item.id, offset: 1 })}
+            >
+              <ChevronDown />
+            </IconAction>
+          </>
+        )}
+        {failed && (
+          <IconAction label="Retry" onClick={() => command({ kind: 'retry', id: item.id })}>
+            <RotateCw />
+          </IconAction>
+        )}
+        {item.status === 'completed' && item.destinationPath && (
+          <IconAction
+            label={window.plexo.platform === 'darwin' ? 'Reveal in Finder' : 'Show in folder'}
+            onClick={() => void window.plexo.revealInFolder(item.destinationPath!)}
+          >
+            <FolderOpen />
+          </IconAction>
+        )}
+        {item.status !== 'active' && item.status !== 'starting' && (
+          <IconAction
+            label={item.status === 'completed' ? 'Remove from list' : 'Remove'}
+            onClick={() => command({ kind: 'remove', id: item.id })}
+          >
+            <X />
+          </IconAction>
+        )}
+      </div>
+    </li>
+  )
+}
+
+function Summary({ queue }: { queue: QueueState }): React.JSX.Element {
+  const count = (status: QueueItem['status']): number =>
+    queue.items.filter((item) => item.status === status).length
+  const done = count('completed')
+  const failed = count('failed')
+  const waiting = count('queued') + count('starting') + count('active')
+  const leftBytes = queue.items
+    .filter((item) => item.status !== 'completed' && item.status !== 'failed')
+    .reduce(
+      (sum, item) => sum + Math.max(0, (item.totalBytes ?? 0) - (item.bytesDownloaded ?? 0)),
+      0
+    )
+  const parts = [`${done} done`]
+  if (failed > 0) parts.push(`${failed} failed`)
+  parts.push(`${waiting} to go`)
+  if (leftBytes > 0) parts.push(`${formatBytes(leftBytes)} left`)
+  return (
+    <div className="mt-[7px] font-mono text-[11px] leading-none tabular-nums text-muted-foreground">
+      {parts.join(' · ')}
+    </div>
+  )
+}
+
+function BridgeStatus({ queue }: { queue: QueueState }): React.JSX.Element {
+  const { bridge } = queue
+  const address = `127.0.0.1:${bridge.port}`
+  const [dot, text] =
+    bridge.status === 'error'
+      ? ['bg-[var(--color-danger)]', bridge.error ?? 'The browser extension can’t reach Plexo']
+      : bridge.status === 'starting'
+        ? ['bg-[var(--color-neutral)]', 'Starting…']
+        : bridge.pairedCount > 0
+          ? [
+              'bg-[var(--color-wifi)]',
+              `${bridge.pairedCount === 1 ? 'Browser' : `${bridge.pairedCount} browsers`} connected · ${address}`
+            ]
+          : ['bg-[var(--color-neutral)]', `No browser connected yet · ${address}`]
+  return (
+    <ScreenFooter className="min-h-11 gap-2.5 px-4 py-2.5">
+      <div className={cn('size-1.5 shrink-0 rounded-full', dot)} aria-hidden="true" />
+      <div className="min-w-0 flex-1 font-mono text-[10.5px] leading-[1.35] text-muted-foreground">
+        <span className="font-semibold tracking-[0.1em] text-[var(--text-secondary)] uppercase">
+          Browser
+        </span>{' '}
+        · {text}
+      </div>
+      {bridge.pairedCount > 0 && (
+        <Button
+          type="button"
+          variant="link"
+          size="xs"
+          className="h-auto shrink-0 px-0 font-mono text-[10.5px]"
+          onClick={() => command({ kind: 'forgetBrowsers' })}
+        >
+          Disconnect
+        </Button>
+      )}
+    </ScreenFooter>
+  )
+}
+
+function EmptyState({ onAdd }: { onAdd: () => void }): React.JSX.Element {
+  return (
+    <div className="flex flex-1 animate-[plexo-row-in_260ms_ease-out] flex-col items-center justify-center gap-3 px-8 text-center">
+      <div className="flex size-11 items-center justify-center rounded-full border-[0.5px] border-[var(--border-strong)] bg-card text-[var(--text-secondary)]">
+        <ListPlus className="size-5" strokeWidth={1.6} aria-hidden="true" />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <div className="font-sans text-[14px] font-semibold text-foreground">Nothing queued</div>
+        <p className="font-sans text-[12px] leading-[1.5] text-[var(--text-secondary)]">
+          Paste several links at once, or start a download in your browser with the Plexo extension
+          installed. Files download one after another, each over every network.
+        </p>
+      </div>
+      <Button type="button" size="sm" onClick={onAdd}>
+        <ListPlus data-icon="inline-start" />
+        Add links
+      </Button>
+    </div>
+  )
+}
+
+export function QueueSheet(): React.JSX.Element {
+  const queue = useAppStore((store) => store.queue)
+  const open = useAppStore((store) => store.queueOpen)
+  const setOpen = useAppStore((store) => store.setQueueOpen)
+  const openAddLinks = useAppStore((store) => store.openAddLinks)
+  const currentDownload = useAppStore((store) => store.currentDownload)
+  const homeDir = useAppStore((store) => store.homeDir)
+
+  // Ages ("link 3m ago") move on while the panel is open.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!open) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(timer)
+  }, [open])
+
+  const items = queue?.items ?? []
+  const failed = items.filter((item) => item.status === 'failed').length
+  const completed = items.filter((item) => item.status === 'completed').length
+  const pending = items.some((item) => item.status === 'queued' || item.status === 'active')
+  const running = queue?.running ?? false
+  const activeItem = items.find((item) => item.status === 'active')
+  const activePaused =
+    !!activeItem &&
+    currentDownload?.id === activeItem.downloadId &&
+    currentDownload?.status === 'paused'
+  // Each waiting item's place in line, counting waiting items only.
+  const positions = new Map<string, number>()
+  for (const item of items) {
+    if (item.status === 'queued') positions.set(item.id, positions.size + 1)
+  }
+
+  const handleBrowse = async (): Promise<void> => {
+    if (!queue) return
+    const chosen = await window.plexo.chooseDestinationFolder(queue.destinationDir)
+    if (chosen) command({ kind: 'setDestination', dir: chosen })
+  }
+
+  return (
+    <Sheet open={open} onOpenChange={setOpen}>
+      <SheetContent aria-describedby={undefined}>
+        <div className="shrink-0 border-b-[0.5px] border-border px-4 pt-3.5 pb-3">
+          <div className="flex items-center gap-2">
+            <SheetTitle className="font-sans text-[15px] leading-none font-bold tracking-[-0.01em]">
+              Queue
+            </SheetTitle>
+            <SheetDescription className="sr-only">
+              Links waiting to download, one after another.
+            </SheetDescription>
+            <div className="flex-1" />
+            <SheetClose
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Close queue"
+                  className="-mr-1.5 text-muted-foreground"
+                />
+              }
+            >
+              <X />
+            </SheetClose>
+          </div>
+          {queue && items.length > 0 && <Summary queue={queue} />}
+
+          <div className="mt-3 flex items-center gap-1.5">
+            {running && (pending || activeItem) && !activePaused ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => command({ kind: 'stop' })}
+              >
+                <Pause data-icon="inline-start" />
+                Pause queue
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                disabled={!pending}
+                onClick={() => command({ kind: 'start' })}
+              >
+                <Play data-icon="inline-start" />
+                {activeItem || completed + failed > 0 ? 'Resume queue' : 'Start queue'}
+              </Button>
+            )}
+            <Button type="button" size="sm" variant="secondary" onClick={() => openAddLinks()}>
+              <ListPlus data-icon="inline-start" />
+              Add links
+            </Button>
+            <div className="flex-1" />
+            {failed > 0 && (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="text-muted-foreground"
+                      onClick={() => command({ kind: 'retryFailed' })}
+                    >
+                      <RotateCw data-icon="inline-start" />
+                      Retry
+                    </Button>
+                  }
+                />
+                <TooltipContent>Retry every failed download</TooltipContent>
+              </Tooltip>
+            )}
+            {completed > 0 && (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="-mr-1.5 text-muted-foreground"
+                      onClick={() => command({ kind: 'clearFinished' })}
+                    >
+                      Clear
+                    </Button>
+                  }
+                />
+                <TooltipContent>Clear finished downloads from the list</TooltipContent>
+              </Tooltip>
+            )}
+          </div>
+
+          <div className="mt-2.5 flex h-8 items-center gap-[9px] rounded-[8px] border-[0.5px] border-border px-2.5">
+            <div className={labelClass}>Save to</div>
+            <div className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[var(--text-secondary)]">
+              {queue ? toDisplayPath(queue.destinationDir, homeDir) : ''}
+            </div>
+            <Button
+              type="button"
+              variant="link"
+              size="xs"
+              onClick={handleBrowse}
+              className="h-auto shrink-0 px-0 font-mono text-[11px]"
+            >
+              Browse…
+            </Button>
+          </div>
+
+          {queue?.blocked && (
+            <div
+              role="status"
+              className="mt-2.5 flex animate-[plexo-row-in_200ms_ease-out] gap-2 rounded-[8px] border-[0.5px] border-[var(--color-usb-border)] bg-[var(--color-usb-bg)] px-2.5 py-2 font-sans text-[11.5px] leading-[1.45] text-[var(--color-usb-text)]"
+            >
+              <AlertTriangle className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+              Your current download failed. Resume it, or start a new download, and the queue
+              carries on.
+            </div>
+          )}
+        </div>
+
+        {items.length === 0 ? (
+          <EmptyState onAdd={() => openAddLinks()} />
+        ) : (
+          <ul className="min-h-0 flex-1 overflow-y-auto" aria-label="Queued downloads">
+            {items.map((item) => {
+              return (
+                <QueueRow
+                  key={item.id}
+                  item={item}
+                  waitingCount={positions.size}
+                  position={positions.get(item.id) ?? 0}
+                  live={
+                    item.status === 'active' && currentDownload?.id === item.downloadId
+                      ? currentDownload
+                      : null
+                  }
+                  now={now}
+                  homeDir={homeDir}
+                />
+              )
+            })}
+          </ul>
+        )}
+
+        {queue && <BridgeStatus queue={queue} />}
+      </SheetContent>
+    </Sheet>
+  )
+}

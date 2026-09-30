@@ -6,6 +6,7 @@ import type {
   NetworkInterfaceInfo,
   NetworkPreference,
   NetworkPreferences,
+  QueueState,
   ThemeSource,
   UpdateInfo
 } from '@shared/types'
@@ -53,6 +54,16 @@ interface AppStore {
   /** Persisted — the last folder picked, falling back to downloadsDir. */
   destinationDir: string
 
+  /** The download queue, as the main process last sent it. Null until the first one arrives. */
+  queue: QueueState | null
+  queueOpen: boolean
+  addLinksOpen: boolean
+  /** The text the Add links dialog opened with — kept after it closes, so the dialog doesn't
+   * empty out while it animates away. */
+  addLinksDraft: string
+  /** Counts openings: each one starts a fresh form. */
+  addLinksKey: number
+
   /** Asks the main process for the network list now; it also pushes every change. */
   loadInterfaces: () => Promise<void>
   receiveInterfaces: (interfaces: NetworkInterfaceInfo[]) => void
@@ -66,6 +77,10 @@ interface AppStore {
   clearCurrentDownload: () => void
   setDraftUrl: (url: string) => void
   setDestinationDir: (dir: string) => void
+  receiveQueue: (queue: QueueState) => void
+  setQueueOpen: (open: boolean) => void
+  openAddLinks: (text?: string) => void
+  closeAddLinks: () => void
 }
 
 // Settings saved by the main process, read once before the first paint (see InitialState).
@@ -97,6 +112,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   draftUrl: '',
   destinationDir: initial.destinationDir ?? initial.downloadsDir,
+
+  queue: null,
+  queueOpen: false,
+  addLinksOpen: false,
+  addLinksDraft: '',
+  addLinksKey: 0,
 
   loadInterfaces: async () => {
     // A re-scan keeps showing the last result rather than flashing back to 'loading'.
@@ -201,5 +222,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setDestinationDir: (destinationDir) => {
     set({ destinationDir })
     persist({ destinationDir })
-  }
+  },
+
+  receiveQueue: (queue) => set({ queue }),
+  setQueueOpen: (queueOpen) => set({ queueOpen }),
+  openAddLinks: (text = '') =>
+    set((store) => ({
+      addLinksOpen: true,
+      addLinksDraft: text,
+      addLinksKey: store.addLinksKey + 1
+    })),
+  closeAddLinks: () => set({ addLinksOpen: false })
 }))

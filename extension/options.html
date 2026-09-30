@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Plexo extension settings</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      body {
+        background: var(--card);
+      }
+
+      .page {
+        max-width: 620px;
+        margin: 0 auto;
+        padding: 36px 24px 48px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+
+      .brand img {
+        width: 36px;
+        height: 36px;
+      }
+
+      .brand h1 {
+        font-size: 20px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      .brand p {
+        font-size: 12.5px;
+        color: var(--text-secondary);
+      }
+
+      section {
+        margin-bottom: 16px;
+        padding: 18px 20px;
+        border: 0.5px solid var(--border-strong);
+        border-radius: 12px;
+        background: var(--bg);
+      }
+
+      section > .label {
+        display: block;
+        margin-bottom: 14px;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .grow {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .option {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        cursor: pointer;
+      }
+
+      .option input[type='checkbox'] {
+        margin-top: 2px;
+      }
+
+      .option strong {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .option span {
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+
+      .stack {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .indent {
+        margin: 10px 0 0 26px;
+        transition: opacity 0.18s;
+      }
+
+      .indent[aria-disabled='true'] {
+        opacity: 0.45;
+      }
+
+      .note {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border-radius: 9px;
+        font-size: 12px;
+        line-height: 1.5;
+        animation: rise 0.22s ease-out;
+      }
+
+      .note.warn {
+        border: 0.5px solid var(--warn-border);
+        background: var(--warn-bg);
+        color: var(--warn-text);
+      }
+
+      .note.error {
+        border: 0.5px solid var(--danger-border);
+        background: var(--danger-bg);
+        color: var(--danger);
+      }
+
+      .saved {
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        padding: 6px 12px;
+        border-radius: 8px;
+        background: var(--text);
+        color: var(--bg);
+        font: 500 11px/1 var(--mono);
+        opacity: 0;
+        transform: translateY(6px);
+        transition:
+          opacity 0.18s,
+          transform 0.18s;
+        pointer-events: none;
+      }
+
+      .saved.show {
+        opacity: 1;
+        transform: none;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(3px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="brand">
+        <img src="icons/icon-128.png" alt="" />
+        <div>
+          <h1>Plexo</h1>
+          <p>Hands your downloads to Plexo, which fetches them over every network at once.</p>
+        </div>
+      </div>
+
+      <section aria-labelledby="connection-label">
+        <span id="connection-label" class="label">Connection</span>
+        <div class="row">
+          <div class="grow">
+            <span id="status" class="pill" data-state="checking">Checking</span>
+          </div>
+          <button id="connect" class="primary" type="button" hidden>Connect to Plexo</button>
+          <button id="disconnect" class="secondary" type="button" hidden>Disconnect</button>
+        </div>
+        <p id="connect-help" class="note warn" hidden></p>
+        <p id="connect-error" class="note error" role="alert" hidden></p>
+      </section>
+
+      <section aria-labelledby="capture-label">
+        <span id="capture-label" class="label">Which downloads go to Plexo</span>
+        <div class="stack">
+          <div>
+            <label class="option">
+              <input id="useAllowlist" type="checkbox" />
+              <div>
+                <strong>Downloads from these sites</strong>
+                <span
+                  >One per line. Covers the site’s subdomains, and downloads started from its
+                  pages.</span
+                >
+              </div>
+            </label>
+            <div id="allowlist-box" class="indent">
+              <textarea id="allowlist" rows="4" spellcheck="false" aria-label="Sites"></textarea>
+            </div>
+          </div>
+          <div>
+            <label class="option">
+              <input id="useSizeThreshold" type="checkbox" />
+              <div>
+                <strong>Any download at least this big</strong>
+                <span>From any site — handy once you trust it with everything large.</span>
+              </div>
+            </label>
+            <div id="size-box" class="indent row">
+              <input
+                id="minSizeMB"
+                type="number"
+                min="1"
+                max="1000000"
+                step="1"
+                aria-label="Size in megabytes"
+              />
+              <span class="muted mono" style="font-size: 12px">MB</span>
+            </div>
+          </div>
+          <p class="muted" style="font-size: 12px">
+            Anything else stays in the browser. You can always right-click a link and choose
+            <em>Download with Plexo</em>. Downloads in private windows are never sent.
+          </p>
+        </div>
+      </section>
+
+      <section aria-labelledby="behavior-label">
+        <span id="behavior-label" class="label">When a download goes to Plexo</span>
+        <label class="option">
+          <input id="eraseHandedOver" type="checkbox" />
+          <div>
+            <strong>Remove it from the browser’s download list</strong>
+            <span>Otherwise it stays there, marked as cancelled.</span>
+          </div>
+        </label>
+        <p class="muted" style="margin-top: 14px; font-size: 12px">
+          If Plexo isn’t running, the browser downloads the file as usual.
+        </p>
+      </section>
+
+      <section aria-labelledby="advanced-label">
+        <span id="advanced-label" class="label">Advanced</span>
+        <div class="row">
+          <div class="grow">
+            <strong style="font-size: 13px; font-weight: 600">Plexo’s port</strong>
+            <div class="muted" style="font-size: 12px">
+              Only change this if Plexo says its port is taken — then start Plexo with
+              <span class="mono">PLEXO_BRIDGE_PORT</span> set to the same number.
+            </div>
+          </div>
+          <input id="port" type="number" min="1024" max="65535" step="1" aria-label="Port" />
+        </div>
+      </section>
+    </div>
+    <div id="saved" class="saved" role="status">Saved</div>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto'
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import {
+  createServer,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type ServerResponse
+} from 'node:http'
 import type { AddressInfo, Socket } from 'node:net'
 
 /**
@@ -42,6 +47,8 @@ export interface OriginRequest {
   /** Which TCP connection it arrived on, numbered in the order they opened. */
   connection: number
   range: { start: number; end: number | null } | null
+  /** Its headers: what a test checks cookies, Referer and User-Agent against. */
+  headers: IncomingHttpHeaders
 }
 
 export interface LoggedRequest extends OriginRequest {
@@ -200,7 +207,8 @@ export class Origin {
       path: req.url ?? '/',
       from: (req.socket.remoteAddress ?? '').replace(/^::ffff:/, ''),
       connection: this.connectionIds.get(req.socket) ?? 0,
-      range: parseRange(req.headers.range)
+      range: parseRange(req.headers.range),
+      headers: req.headers
     }
     const fault = this.rule(request) ?? 'ok'
     const entry: LoggedRequest = { ...request, at: Date.now(), fault, status: 0, bytesSent: 0 }
