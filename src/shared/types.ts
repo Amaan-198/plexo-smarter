@@ -293,6 +293,9 @@ export interface QueueItem {
   downloadId?: string
   /** Where the finished file was saved. */
   destinationPath?: string
+  /** The folder its download was started in, which it finishes in whatever the queue's folder
+   * is by then. */
+  saveDir?: string
   error?: string
   problem?: QueueItemProblem
   /** Downloads started for it, retries included. */

@@ -23,8 +23,8 @@ export const isFailure = (item: Pick<QueueItem, 'status' | 'problem'>): boolean 
 export const isCancelled = (item: Pick<QueueItem, 'status' | 'problem'>): boolean =>
   item.status === 'failed' && item.problem === 'cancelled'
 
-/** Has a download under way in the queue's folder — running, paused, or failed with part of it
- * kept for Retry — which will finish there: the folder can't change under it. */
+/** Has a download under way — running, paused, or failed with part of it kept for Retry — which
+ * finishes in the folder it started in, whatever the queue's folder is by then. */
 export const holdsFolder = (
   item: Pick<QueueItem, 'status' | 'problem' | 'downloadId' | 'bytesDownloaded'>
 ): boolean =>

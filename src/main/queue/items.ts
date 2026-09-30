@@ -59,6 +59,7 @@ export function sanitizeStoredItem(value: unknown): StoredItem | null {
     bytesDownloaded: optionalCount(value.bytesDownloaded),
     downloadId: optionalString(value.downloadId, 64),
     destinationPath: optionalString(value.destinationPath, 4096),
+    saveDir: optionalString(value.saveDir, 4096),
     error: optionalString(value.error, 2000),
     problem: PROBLEMS.has(value.problem as string)
       ? (value.problem as QueueItemProblem)

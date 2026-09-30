@@ -4,16 +4,18 @@ import { useAppStore } from '../store/useAppStore'
 import { toDisplayPath } from '../utils/format'
 import { Button } from './ui/button'
 
-/** The queue's folder, which every item is saved to, and a way to pick another — once no
- * download under way is still bound to this one. */
+/** The queue's folder, which items are saved to, and a way to pick another. A new folder is for
+ * the items not started yet: one under way finishes where it started, which this says. */
 export function QueueDestination({ className }: { className?: string }): React.JSX.Element {
   const destinationDir = useAppStore((store) => store.queue?.destinationDir)
   const items = useAppStore((store) => store.queue?.items)
   const homeDir = useAppStore((store) => store.homeDir)
-  const holding = (items ?? []).filter(holdsFolder)
+  const elsewhere = (items ?? []).filter(
+    (item) => holdsFolder(item) && item.saveDir && item.saveDir !== destinationDir
+  )
 
   const handleBrowse = async (): Promise<void> => {
-    if (destinationDir === undefined || holding.length > 0) return
+    if (destinationDir === undefined) return
     const chosen = await window.plexo.chooseDestinationFolder(destinationDir)
     if (chosen) await window.plexo.queueCommand({ kind: 'setDestination', dir: chosen })
   }
@@ -31,20 +33,18 @@ export function QueueDestination({ className }: { className?: string }): React.J
           type="button"
           variant="link"
           size="xs"
-          disabled={holding.length > 0}
           onClick={handleBrowse}
           className="h-auto shrink-0 px-0 font-mono text-[11px]"
         >
           Browse…
         </Button>
       </div>
-      {holding.length > 0 && (
+      {elsewhere.length > 0 && (
         <p className="font-sans text-[11px] leading-[1.45] text-muted-foreground">
-          {holding.length === 1
-            ? `${nameOf(holding[0])} has started in this folder and finishes there.`
-            : `${holding.length} files have started in this folder and finish there.`}{' '}
-          To pick another folder, let {holding.length === 1 ? 'it' : 'them'} finish, or cancel or
-          remove {holding.length === 1 ? 'it' : 'them'}.
+          {elsewhere.length === 1
+            ? `${nameOf(elsewhere[0])} has already started, so it finishes in ${toDisplayPath(elsewhere[0].saveDir!, homeDir)}.`
+            : `${elsewhere.length} files have already started, so they finish in the folder they started in.`}{' '}
+          New files go to the folder above.
         </p>
       )}
     </div>

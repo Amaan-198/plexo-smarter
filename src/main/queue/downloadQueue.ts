@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { app, Notification, shell, type BrowserWindow } from 'electron'
 import { IpcChannels } from '../../shared/ipc-channels'
@@ -14,7 +14,7 @@ import type {
   QueueLink,
   QueueState
 } from '../../shared/types'
-import { holdsFolder, isCancelled, isFailure, nameOf } from '../../shared/queueItem'
+import { isCancelled, isFailure, nameOf } from '../../shared/queueItem'
 import type { DownloadEvent, DownloadManager } from '../download/downloadManager'
 import { probeWithContext } from '../download/probe'
 import { readJson, updateJson } from '../jsonFile'
@@ -587,13 +587,11 @@ export class DownloadQueue {
     if (page && /^https?:/i.test(page)) void shell.openExternal(page)
   }
 
+  /** Sets the folder for items not started yet; one under way finishes where it started. */
   async setDestination(dir: string): Promise<void> {
     if (typeof dir !== 'string' || !isAbsolute(dir)) return
     // Set before the saved queue has loaded, it would be overwritten by the saved folder.
     await this.loaded
-    // A download under way finishes where it started: the folder waits until none is (see the
-    // window's QueueDestination, which says so).
-    if (this.items.some(holdsFolder)) return
     this.destinationDir = dir
     this.stoppedBecause = undefined
     this.changed()
@@ -646,6 +644,8 @@ export class DownloadQueue {
   private applyState(item: StoredItem, state: Readonly<Omit<DownloadState, 'blocks'>>): void {
     item.bytesDownloaded = state.bytesDownloaded
     if (state.totalBytes > 0) item.totalBytes = state.totalBytes
+    // One found again after a relaunch, started before its item could note where.
+    item.saveDir ??= dirname(state.destinationPath)
     switch (state.status) {
       case 'downloading':
       case 'paused':
@@ -825,9 +825,10 @@ export class DownloadQueue {
         await manager.remove(stale)
       }
 
+      const saveDir = this.destinationDir
       const downloadId = await manager.start({
         url: probe.finalUrl,
-        destinationDir: this.destinationDir,
+        destinationDir: saveDir,
         // The server's own name for the file wins: what a browser reports may be its own
         // variant ("file (1).zip" for a name its downloads folder already had).
         suggestedFileName:
@@ -846,6 +847,8 @@ export class DownloadQueue {
         return
       }
       item.downloadId = downloadId
+      // A change of folder from here on is for the items after it (see setDestination).
+      item.saveDir = saveDir
       item.status = 'active'
       item.totalBytes = probe.totalBytes ?? item.totalBytes
       this.changed()
