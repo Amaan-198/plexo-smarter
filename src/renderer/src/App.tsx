@@ -15,7 +15,7 @@ import { DownloadingScreen } from './screens/DownloadingScreen'
 import { ErrorScreen } from './screens/ErrorScreen'
 import { IdleScreen } from './screens/IdleScreen'
 import { NoConnectionsScreen } from './screens/NoConnectionsScreen'
-import { useAppStore } from './store/useAppStore'
+import { queueItemFor, useAppStore } from './store/useAppStore'
 
 function assertNever(status: never): never {
   throw new Error(`Unhandled download status: ${String(status)}`)
@@ -88,10 +88,7 @@ function App(): React.JSX.Element {
     if (!current) return
     // A failed queue item's download holds what it fetched, for the item's Retry to pick up:
     // moving on from its screen leaves it be.
-    const queued = useAppStore
-      .getState()
-      .queue?.items.some((item) => item.downloadId === current.id)
-    if (current.status === 'error' && queued) return
+    if (current.status === 'error' && queueItemFor(current.id)) return
     void window.plexo.removeDownload(current.id)
   }
 
@@ -100,7 +97,7 @@ function App(): React.JSX.Element {
     const { id, url } = currentDownload
     // One of the queue's: it goes back into the queue, into the queue's folder, rather than to
     // the start screen as a download of its own.
-    const item = useAppStore.getState().queue?.items.find((entry) => entry.downloadId === id)
+    const item = queueItemFor(id)
     clearCurrentDownload()
     if (item) {
       void window.plexo

@@ -1,4 +1,4 @@
-import { nameOf } from '@shared/queueItemName'
+import { isCancelled, isFailure, nameOf } from '@shared/queueItem'
 import type { DownloadState, QueueItem, QueueState } from '@shared/types'
 import { cn } from 'cn'
 import {
@@ -270,6 +270,7 @@ function QueueRow({
   homeDir: string
 }): React.JSX.Element {
   const expired = item.status === 'failed' && item.problem === 'expired'
+  // Failed or cancelled: either can be retried; only a failure reads as an error.
   const failed = item.status === 'failed'
   const total = live?.totalBytes || item.totalBytes || 0
   const done = live?.bytesDownloaded ?? item.bytesDownloaded ?? 0
@@ -312,7 +313,7 @@ function QueueRow({
         <div
           className={cn(
             'mt-[3px] font-mono text-[10.5px] leading-[1.45] tabular-nums',
-            failed
+            isFailure(item)
               ? expired
                 ? 'line-clamp-3 text-[var(--color-usb-text)]'
                 : 'line-clamp-3 text-destructive'
@@ -414,7 +415,8 @@ function Summary({ queue }: { queue: QueueState }): React.JSX.Element {
   const count = (status: QueueItem['status']): number =>
     queue.items.filter((item) => item.status === status).length
   const done = count('completed')
-  const failed = count('failed')
+  const failed = queue.items.filter(isFailure).length
+  const cancelled = queue.items.filter(isCancelled).length
   const waiting = count('queued') + count('starting') + count('active')
   const leftBytes = queue.items
     .filter((item) => item.status !== 'completed' && item.status !== 'failed')
@@ -424,6 +426,7 @@ function Summary({ queue }: { queue: QueueState }): React.JSX.Element {
     )
   const parts = [`${done} done`]
   if (failed > 0) parts.push(`${failed} failed`)
+  if (cancelled > 0) parts.push(`${cancelled} cancelled`)
   parts.push(`${waiting} to go`)
   if (leftBytes > 0) parts.push(`${formatBytes(leftBytes)} left`)
   return (
@@ -511,8 +514,9 @@ export function QueueSheet(): React.JSX.Element {
   }, [open])
 
   const items = queue?.items ?? []
-  const failed = items.filter((item) => item.status === 'failed').length
-  const completed = items.filter((item) => item.status === 'completed').length
+  const failed = items.filter(isFailure).length
+  // Done with, and cleared by Clear: saved, or cancelled.
+  const finished = items.filter((item) => item.status === 'completed' || isCancelled(item)).length
   const pending = items.some((item) => item.status === 'queued' || item.status === 'active')
   const running = queue?.running ?? false
   const activeItem = items.find((item) => item.status === 'active')
@@ -579,7 +583,7 @@ export function QueueSheet(): React.JSX.Element {
                 onClick={() => command({ kind: 'start' })}
               >
                 <Play data-icon="inline-start" />
-                {activeItem || completed + failed > 0 ? 'Resume queue' : 'Start queue'}
+                {activeItem || finished + failed > 0 ? 'Resume queue' : 'Start queue'}
               </Button>
             )}
             <Button type="button" size="sm" variant="secondary" onClick={() => openAddLinks()}>
@@ -606,7 +610,7 @@ export function QueueSheet(): React.JSX.Element {
                 <TooltipContent>Retry every failed download</TooltipContent>
               </Tooltip>
             )}
-            {completed > 0 && (
+            {finished > 0 && (
               <Tooltip>
                 <TooltipTrigger
                   render={

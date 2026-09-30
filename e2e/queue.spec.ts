@@ -182,6 +182,13 @@ test.describe('download queue @smoke', () => {
     expect(second).toMatchObject({ status: 'failed', problem: 'expired' })
     expect(second.error).toContain('web page')
     await expectSavedAs(third, good)
+
+    // The link works again and is added again: the failed item goes again, not a second one.
+    gone.setRule(() => undefined)
+    await plexo.api.addToQueue([{ url: gone.url('/files/gone.bin') }], { start: true })
+    const again = await waitForQueue(plexo, (state) => state.items[0]?.status === 'completed')
+    expect(again.items).toHaveLength(3)
+    await expectSavedAs(again.items[0], gone)
   })
 
   test('a relaunch brings the queue back stopped, and it carries on from there', async ({
@@ -838,5 +845,48 @@ test.describe('failures and retries', () => {
       .filter((request) => request.at >= retriedAt)
       .reduce((sum, request) => sum + request.bytesSent, 0)
     expect(fetchedAgain).toBeLessThanOrEqual(size - kept + 256 * 1024)
+  })
+})
+
+test.describe('cancelling and removing', () => {
+  test('a cancelled download isn’t a failure: not retried with the failed ones, and cleared with the finished', async ({
+    plexo,
+    serve
+  }) => {
+    const slow = await serve({ size: 1024 * 1024, seed: 91, bytesPerSecond: 150_000 })
+    const next = await serve({ size: 64 * 1024, seed: 92 })
+    await plexo.api.addToQueue(
+      [{ url: slow.url('/files/cancelled.bin') }, { url: next.url('/files/next.bin') }],
+      { start: true }
+    )
+    const started = await waitForQueue(plexo, (queue) => (queue.items[0]?.bytesDownloaded ?? 0) > 0)
+    await plexo.api.cancelDownload(started.items[0].downloadId!)
+    await waitForQueue(plexo, (queue) => queue.items[1]?.status === 'completed')
+    await expect(plexo.page.getByRole('button', { name: /^Queue/ })).toHaveAccessibleName(
+      'Queue: 1 of 2 done'
+    )
+
+    await plexo.api.queueCommand({ kind: 'retryFailed' })
+    expect((await queueOf(plexo)).items[0]).toMatchObject({
+      status: 'failed',
+      problem: 'cancelled'
+    })
+    await plexo.api.queueCommand({ kind: 'clearFinished' })
+    await waitForQueue(plexo, (queue) => queue.items.length === 0)
+  })
+
+  test('removing a queue item while its failed download is on screen leaves that screen', async ({
+    plexo,
+    serve
+  }) => {
+    const origin = await serve({ size: 256 * 1024, seed: 93 })
+    // The link checks out, then every request for the file is refused.
+    origin.setRule((request) => (request.range?.end !== 0 ? { status: 403 } : undefined))
+    await plexo.api.addToQueue([{ url: origin.url('/files/refused.bin') }], { start: true })
+    const [item] = (await waitForQueue(plexo, allDone)).items
+    await expect(plexo.page.getByText('Download Failed')).toBeVisible()
+
+    await plexo.api.queueCommand({ kind: 'remove', id: item.id })
+    await expect(plexo.page.getByRole('button', { name: 'Start' })).toBeVisible()
   })
 })

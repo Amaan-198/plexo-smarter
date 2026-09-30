@@ -360,6 +360,7 @@ export interface AddLinksResult {
   added: number
   /** Already in the queue and not finished. */
   duplicates: number
-  /** Refreshed an item waiting on a fresh link, rather than adding a new one. */
+  /** Sent an item already there — waiting on a fresh link, or failed — on from where it
+   * stopped, rather than adding a new one. */
   refreshed: number
 }

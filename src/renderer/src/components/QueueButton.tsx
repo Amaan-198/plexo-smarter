@@ -1,3 +1,4 @@
+import { isFailure } from '@shared/queueItem'
 import { cn } from 'cn'
 import { ListOrdered } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
@@ -13,7 +14,7 @@ export function QueueButton(): React.JSX.Element {
   const items = queue?.items ?? []
   const total = items.length
   const done = items.filter((item) => item.status === 'completed').length
-  const failed = items.filter((item) => item.status === 'failed').length
+  const failed = items.filter(isFailure).length
   const moving = items.some((item) => item.status === 'active' || item.status === 'starting')
   const label =
     total === 0

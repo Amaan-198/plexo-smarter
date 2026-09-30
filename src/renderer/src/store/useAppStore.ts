@@ -6,6 +6,7 @@ import type {
   NetworkInterfaceInfo,
   NetworkPreference,
   NetworkPreferences,
+  QueueItem,
   QueueState,
   ThemeSource,
   UpdateInfo
@@ -84,6 +85,17 @@ interface AppStore {
   setQueueOpen: (open: boolean) => void
   openAddLinks: (text?: string) => void
   closeAddLinks: () => void
+}
+
+/** Which queue item each download was started for, as queue updates have shown it. Kept after
+ * the item lets go of the download (one that failed with nothing worth keeping is removed at
+ * once), so that download's screen still knows its item. */
+const itemOfDownload = new Map<string, string>()
+
+/** The queue item a download was started for, while that item is still in the queue. */
+export function queueItemFor(downloadId: string): QueueItem | undefined {
+  const itemId = itemOfDownload.get(downloadId)
+  return itemId ? useAppStore.getState().queue?.items.find((item) => item.id === itemId) : undefined
 }
 
 // Settings saved by the main process, read once before the first paint (see InitialState).
@@ -233,7 +245,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
     persist({ excludedNetworks })
   },
 
-  receiveQueue: (queue) => set({ queue }),
+  receiveQueue: (queue) => {
+    for (const item of queue.items) {
+      if (item.downloadId) itemOfDownload.set(item.downloadId, item.id)
+    }
+    set({ queue })
+    // A failed or cancelled queue download on screen whose item has since been removed (here or
+    // from the browser): its download went with it, so there is nothing left to show.
+    const current = get().currentDownload
+    const over = current?.status === 'error' || current?.status === 'cancelled'
+    if (over && itemOfDownload.has(current.id) && !queueItemFor(current.id)) {
+      get().clearCurrentDownload()
+    }
+  },
   setQueueOpen: (queueOpen) => set({ queueOpen }),
   openAddLinks: (text = '') =>
     set((store) => ({
