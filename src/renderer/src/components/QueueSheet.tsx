@@ -510,6 +510,12 @@ export function QueueSheet(): React.JSX.Element {
     !!activeItem &&
     currentDownload?.id === activeItem.downloadId &&
     currentDownload?.status === 'paused'
+  // A download started from the start screen: not one of the queue's, which waits for it.
+  const outside =
+    (currentDownload?.status === 'downloading' || currentDownload?.status === 'paused') &&
+    !items.some((item) => item.downloadId === currentDownload.id)
+      ? currentDownload
+      : null
   // Each waiting item's place in line, counting waiting items only.
   const positions = new Map<string, number>()
   for (const item of items) {
@@ -613,6 +619,14 @@ export function QueueSheet(): React.JSX.Element {
           <QueueDestination className="mt-2.5" />
 
           {queue?.loadError && <QueueNotice>{queue.loadError}</QueueNotice>}
+          {outside && (
+            <QueueNotice>
+              {outside.fileName} is downloading on its own, outside the queue.{' '}
+              {pending
+                ? 'The queue carries on once it’s done.'
+                : 'Its progress is on the main screen.'}
+            </QueueNotice>
+          )}
           {queue?.blocked && (
             <QueueNotice>
               Your current download failed. Resume it, or start a new download, and the queue

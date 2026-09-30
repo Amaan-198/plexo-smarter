@@ -156,6 +156,7 @@ export class DownloadQueue {
         if (item.status === 'completed') continue
         item.downloadId ??= await manager.downloadForQueueItem(item.id)
         const state = item.downloadId ? await manager.stateOf(item.downloadId) : undefined
+        if (state) this.seenStatus.set(state.id, state.status)
         if (!state) {
           item.downloadId = undefined
           if (item.status === 'active') item.status = 'queued'
@@ -584,10 +585,20 @@ export class DownloadQueue {
       return
     }
     const { id, status } = event.state
-    const statusChanged = this.seenStatus.get(id) !== status
+    const previous = this.seenStatus.get(id)
+    const statusChanged = previous !== status
     this.seenStatus.set(id, status)
     const item = this.itemFor(id)
-    if (item) this.applyState(item, event.state)
+    if (item) {
+      // One of the queue's resumed on the main screen (paused, or failed): the queue carries on
+      // with it, rather than stopping once that file is done.
+      const resumed = status === 'downloading' && (previous === 'paused' || previous === 'error')
+      if (resumed && !this.running) {
+        this.running = true
+        this.changed()
+      }
+      this.applyState(item, event.state)
+    }
     // A download of the user's own that finished, one way or another, frees the way.
     else if (statusChanged && status !== 'downloading' && status !== 'paused') this.pump()
   }
@@ -632,8 +643,8 @@ export class DownloadQueue {
       }
       case 'cancelled':
         if (item.status !== 'active') return
-        // Cancelling throws the download away; there is nothing left to resume.
-        item.downloadId = undefined
+        // Cancelling throws the download away, so a retry starts over. The item keeps its id
+        // while it's on screen: Download Again there sends the item back to the queue.
         this.fail(item, { problem: 'cancelled', error: 'Cancelled' })
         this.pump()
         return

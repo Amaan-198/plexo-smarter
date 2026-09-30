@@ -88,12 +88,22 @@ function App(): React.JSX.Element {
   }
 
   const handleDownloadAgain = (): void => {
-    if (currentDownload) {
-      const url = currentDownload.url
-      void window.plexo.removeDownload(currentDownload.id)
-      clearCurrentDownload()
-      useAppStore.getState().setDraftUrl(url)
+    if (!currentDownload) return
+    const { id, url } = currentDownload
+    // One of the queue's: it goes back into the queue, into the queue's folder, rather than to
+    // the start screen as a download of its own.
+    const item = useAppStore.getState().queue?.items.find((entry) => entry.downloadId === id)
+    clearCurrentDownload()
+    if (item) {
+      void window.plexo
+        .removeDownload(id)
+        .then(() => window.plexo.queueCommand({ kind: 'retry', id: item.id }))
+        .catch(() => {})
+      useAppStore.getState().setQueueOpen(true)
+      return
     }
+    void window.plexo.removeDownload(id)
+    useAppStore.getState().setDraftUrl(url)
   }
 
   const noConnections = interfacesStatus === 'ready' && interfaces.length === 0

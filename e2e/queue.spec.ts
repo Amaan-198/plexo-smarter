@@ -599,3 +599,62 @@ test.describe('queue safety', () => {
     await expectSavedAs(queue.items[0], other)
   })
 })
+
+test.describe('the queue and the main screen', () => {
+  test('Download Again on a cancelled queue download sends it back to the queue', async ({
+    plexo,
+    serve,
+    dirs
+  }) => {
+    const origin = await serve({ size: 1024 * 1024, seed: 71, bytesPerSecond: 150_000 })
+    await plexo.api.addToQueue([{ url: origin.url('/files/again.bin') }], { start: true })
+    const started = await waitForQueue(plexo, (queue) => (queue.items[0]?.bytesDownloaded ?? 0) > 0)
+    await plexo.api.cancelDownload(started.items[0].downloadId!)
+    await waitForQueue(plexo, (queue) => queue.items[0]?.problem === 'cancelled')
+
+    await plexo.page.getByRole('button', { name: 'Download Again' }).click()
+    const queue = await waitForQueue(plexo, (state) => state.items[0]?.status === 'completed')
+    // The same item, downloaded into the queue's folder — not a download of its own.
+    expect(queue.items).toHaveLength(1)
+    await expectSavedAs(queue.items[0], origin)
+    expect(dirname(queue.items[0].destinationPath!)).toBe(dirs.dest)
+  })
+
+  test('Resume on the main screen after a relaunch carries the queue on', async ({
+    plexo,
+    serve
+  }) => {
+    const slow = await serve({ size: 1024 * 1024, seed: 72, bytesPerSecond: 150_000 })
+    const next = await serve({ size: 200 * 1024, seed: 73 })
+    await plexo.api.addToQueue(
+      [{ url: slow.url('/files/first.bin') }, { url: next.url('/files/second.bin') }],
+      { start: true }
+    )
+    await waitForQueue(plexo, (queue) => (queue.items[0]?.bytesDownloaded ?? 0) > 0)
+    await plexo.relaunch()
+    await waitForQueue(plexo, (queue) => queue.items[0]?.status === 'active')
+
+    await plexo.page.getByRole('button', { name: 'Resume', exact: true }).click()
+    const queue = await waitForQueue(plexo, (state) =>
+      state.items.every((item) => item.status === 'completed')
+    )
+    await expectSavedAs(queue.items[0], slow)
+    await expectSavedAs(queue.items[1], next)
+  })
+
+  test('a download started on its own is named in the queue, which waits for it', async ({
+    plexo,
+    serve
+  }) => {
+    const queued = await serve({ size: 64 * 1024, seed: 74 })
+    const own = await serve({ size: 1024 * 1024, seed: 75, bytesPerSecond: 40_000 })
+    await plexo.api.addToQueue([{ url: queued.url('/files/waiting.bin') }], { start: false })
+
+    await plexo.start(own.url('/files/own.bin'), own.sha256)
+    await plexo.page.getByRole('button', { name: /^Queue/ }).click()
+    await expect(plexo.page.getByRole('status').filter({ hasText: 'outside' })).toHaveText(
+      'own.bin is downloading on its own, outside the queue. The queue carries on once it’s done.'
+    )
+    await plexo.waitForStatus('completed')
+  })
+})
