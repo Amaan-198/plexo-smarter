@@ -35,12 +35,14 @@ export function hostOf(url) {
 }
 
 /** "filekeeper.net" covers filekeeper.net and every subdomain of it (a file host's download
- * servers usually live on one). Entries are forgiving: a pasted URL or "*.site" works too. */
+ * servers usually live on one). Entries are forgiving: a pasted URL, "site:port/path" or
+ * "*.site" works too. */
 export function normalizeDomain(entry) {
-  let text = String(entry).trim().toLowerCase()
+  const text = String(entry).trim().toLowerCase()
   if (!text) return ''
-  if (/^[a-z]+:\/\//.test(text)) text = hostOf(text)
-  return text.replace(/^\*\./, '').replace(/^\.+|\/.*$|\.+$/g, '')
+  // Read as a URL's host, which drops a port, path or query however it was written.
+  const host = hostOf(/^[a-z]+:\/\//.test(text) ? text : `http://${text}`)
+  return host.replace(/^\*\./, '').replace(/^\.+|\.+$/g, '')
 }
 
 export function onAllowlist(host, allowlist) {
