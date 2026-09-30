@@ -524,10 +524,11 @@ export function QueueSheet(): React.JSX.Element {
     !!activeItem &&
     currentDownload?.id === activeItem.downloadId &&
     currentDownload?.status === 'paused'
-  // A download started from the start screen: not one of the queue's, which waits for it.
+  // A download started from the start screen: not one of the queue's, which waits for it. (One
+  // the queue is starting shows up here a moment before its item says it's its own.)
   const outside =
     (currentDownload?.status === 'downloading' || currentDownload?.status === 'paused') &&
-    !items.some((item) => item.downloadId === currentDownload.id)
+    !items.some((item) => item.downloadId === currentDownload.id || item.status === 'starting')
       ? currentDownload
       : null
   // Each waiting item's place in line, counting waiting items only.

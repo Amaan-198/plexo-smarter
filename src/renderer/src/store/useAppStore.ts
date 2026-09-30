@@ -197,6 +197,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const previous = get().currentDownload
     const download = applyDownloadUpdate(previous, update)
     if (!download || download === previous) return
+    // The last word of a queue download whose item was removed while it ran (cancelled from the
+    // browser, say): the item went first, so there is nothing to show for it.
+    const over = download.status === 'error' || download.status === 'cancelled'
+    if (over && itemOfDownload.has(download.id) && !queueItemFor(download.id)) {
+      if (previous?.id === download.id) get().clearCurrentDownload()
+      return
+    }
     const isNewDownload = !previous || previous.id !== download.id
 
     let speedHistory = isNewDownload ? [] : get().speedHistory
