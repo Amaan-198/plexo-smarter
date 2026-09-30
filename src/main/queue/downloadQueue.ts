@@ -517,7 +517,8 @@ export class DownloadQueue {
   }
 
   /** Moves a waiting item one place up or down the line of waiting items. */
-  move(id: string, offset: -1 | 1): void {
+  async move(id: string, offset: -1 | 1): Promise<void> {
+    await this.loaded
     const index = this.items.findIndex((entry) => entry.id === id)
     if (index < 0 || this.items[index].status !== 'queued') return
     let target = index + offset
@@ -551,8 +552,10 @@ export class DownloadQueue {
     if (page && /^https?:/i.test(page)) void shell.openExternal(page)
   }
 
-  setDestination(dir: string): void {
+  async setDestination(dir: string): Promise<void> {
     if (typeof dir !== 'string' || !isAbsolute(dir)) return
+    // Set before the saved queue has loaded, it would be overwritten by the saved folder.
+    await this.loaded
     this.destinationDir = dir
     this.changed()
   }

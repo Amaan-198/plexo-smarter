@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { request as httpRequest } from 'node:http'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { QueueItem, QueueState } from '../src/shared/types'
 import { expect, LAN_ADDRESS, test, type PlexoApp } from './fixtures'
 import { sha256, type Origin } from './origin'
@@ -470,7 +470,10 @@ test.describe('queue safety', () => {
     // The queue still works for this session…
     const origin = await serve({ size: 100 * 1024, seed: 51 })
     await plexo.api.addToQueue([{ url: origin.url('/files/session.bin') }], { start: true })
-    await expectSavedAs((await waitForQueue(plexo, allDone)).items[0], origin)
+    const [item] = (await waitForQueue(plexo, allDone)).items
+    await expectSavedAs(item, origin)
+    // In the folder picked while the queue was still loading, not the default one.
+    expect(dirname(item.destinationPath!)).toBe(dirs.dest)
     // …but what's there is left as it was.
     expect((await stat(path)).isDirectory()).toBe(true)
   })
