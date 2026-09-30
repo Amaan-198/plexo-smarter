@@ -146,6 +146,8 @@ test('a download started in the browser is handed to Plexo with its session', as
     const page = await browser.context.newPage()
     await page.goto(site.page)
     await page.click('#download')
+    // The page says where the download went.
+    await expect(page.getByRole('status').filter({ hasText: 'Sent to Plexo' })).toBeVisible()
 
     const queue = await waitForQueue(plexo, (state) =>
       state.items.some((item) => item.status === 'completed')
@@ -209,6 +211,9 @@ test('with Plexo out of reach, the browser downloads it itself', async ({ plexo,
     await page.goto(site.page)
     const download = page.waitForEvent('download')
     await page.click('#download')
+    await expect(page.getByRole('status').filter({ hasText: /Plexo isn.t running/ })).toContainText(
+      'Downloading in the browser instead'
+    )
     await (await download).path()
 
     await expect

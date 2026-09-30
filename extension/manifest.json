@@ -27,6 +27,6 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["downloads", "cookies", "storage", "contextMenus"],
+  "permissions": ["downloads", "cookies", "storage", "contextMenus", "scripting", "notifications"],
   "host_permissions": ["<all_urls>"]
 }

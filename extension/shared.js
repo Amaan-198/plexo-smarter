@@ -17,6 +17,8 @@ export const DEFAULTS = {
   minSizeMB: 100,
   /** Take handed-over downloads off the browser's own download list. */
   eraseHandedOver: true,
+  /** Say on the page (or in a notification) that a download went to Plexo, or why it didn't. */
+  showConfirmation: true,
   /** The last few downloads handed over, newest first, for the popup. */
   recent: []
 }

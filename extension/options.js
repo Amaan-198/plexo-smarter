@@ -94,10 +94,11 @@ async function init() {
   $('useSizeThreshold').checked = settings.useSizeThreshold
   $('minSizeMB').value = String(settings.minSizeMB)
   $('eraseHandedOver').checked = settings.eraseHandedOver
+  $('showConfirmation').checked = settings.showConfirmation
   $('port').value = String(settings.port)
   syncEnabledState()
 
-  for (const id of ['useAllowlist', 'useSizeThreshold', 'eraseHandedOver']) {
+  for (const id of ['useAllowlist', 'useSizeThreshold', 'eraseHandedOver', 'showConfirmation']) {
     $(id).addEventListener('change', (event) => {
       syncEnabledState()
       void save({ [id]: event.target.checked })
