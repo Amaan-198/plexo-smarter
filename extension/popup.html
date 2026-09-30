@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Plexo</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      body {
+        width: 320px;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 16px 12px;
+        border-bottom: 0.5px solid var(--border);
+        background: var(--card);
+      }
+
+      header img {
+        width: 22px;
+        height: 22px;
+      }
+
+      header h1 {
+        flex: 1;
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      main {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 14px 16px 16px;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .row > div {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .title {
+        font-weight: 600;
+        font-size: 12.5px;
+      }
+
+      .hint {
+        font: 11px/1.45 var(--mono);
+        color: var(--text-secondary);
+      }
+
+      .callout {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 0.5px solid var(--border);
+        border-radius: 9px;
+        background: var(--card);
+        animation: rise 0.22s ease-out;
+      }
+
+      .callout p {
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+
+      .recent {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .recent li {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        font: 11px/1.4 var(--mono);
+        color: var(--text-secondary);
+        animation: rise 0.22s ease-out;
+      }
+
+      .recent .name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--text);
+      }
+
+      footer {
+        display: flex;
+        justify-content: flex-end;
+        padding: 9px 16px;
+        border-top: 0.5px solid var(--border);
+        background: var(--card);
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(3px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <img src="icons/icon-32.png" alt="" />
+      <h1>Plexo</h1>
+      <span id="status" class="pill" data-state="checking">Checking</span>
+    </header>
+    <main>
+      <label class="row">
+        <div>
+          <div class="title">Send downloads to Plexo</div>
+          <div id="rules" class="hint"></div>
+        </div>
+        <span class="switch"><input id="enabled" type="checkbox" role="switch" /></span>
+      </label>
+
+      <div id="connect" class="callout" hidden>
+        <p id="connect-text"></p>
+        <div class="row">
+          <button id="connect-button" class="primary" type="button">Connect to Plexo</button>
+        </div>
+      </div>
+
+      <div id="recent-block" hidden>
+        <div class="label" style="margin-bottom: 8px">Sent to Plexo</div>
+        <ul id="recent" class="recent"></ul>
+      </div>
+    </main>
+    <footer>
+      <button id="settings" class="link" type="button">Settings…</button>
+    </footer>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

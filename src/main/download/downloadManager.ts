@@ -184,7 +184,17 @@ interface DownloadRuntime {
   /** Paused by switching off its last network, rather than by Pause: switching one back on
    * resumes it. */
   pausedForNoNetwork?: boolean
+  /** Set aside, failed, for the queue to come back to (see park): kept with its progress, but
+   * never the current download. */
+  parked: boolean
+  /** When it last became the current download — started, or resumed from being parked. */
+  activeAt: number
 }
+
+/** What a download manager tells whoever subscribes: a download's state changed, or it was
+ * removed. The state is live — read it there and then, don't keep it. */
+export type DownloadEvent =
+  { type: 'state'; state: Readonly<DownloadState> } | { type: 'removed'; id: string }
 
 interface PersistedDownloadBase {
   savedAt: number
@@ -195,6 +205,10 @@ interface PersistedDownloadBase {
   /** The networks, as saved before a download listed them in its state. Read only to fill in
    * `networks` for a download saved that way. */
   activeInterfaces?: NetworkInterfaceInfo[]
+  /** See DownloadRuntime. Absent from a manifest saved before the queue: not parked, active since
+   * it started. */
+  parked?: boolean
+  activeAt?: number
 }
 
 type PersistedDownload = PersistedDownloadBase &
@@ -430,7 +444,9 @@ function newRuntime(
     holdUntil: new Map(),
     concurrency: concurrencyFor(requestPayload),
     sentUpdates: 0,
-    sentBlocks: []
+    sentBlocks: [],
+    parked: false,
+    activeAt: state.startedAt
   }
 }
 
@@ -470,12 +486,41 @@ export class DownloadManager {
   private seenAddresses = new Map<string, string[]>()
   /** The powerSaveBlocker keeping the computer awake while a download runs (see keepAwake). */
   private awakeBlocker: number | null = null
+  private listeners = new Set<(event: DownloadEvent) => void>()
 
   constructor(
     private getWindow: () => BrowserWindow | null,
-    private networks: NetworkMonitor
+    private networks: NetworkMonitor,
+    /** Parked downloads something still wants (the queue's failed items), read once at startup:
+     * any other parked one is left over, and is removed with the rest (see restore). */
+    private retained: () => Promise<ReadonlySet<string>> = async () => new Set()
   ) {
     this.initialization = this.restorePersistedDownloads()
+  }
+
+  /** Calls `listener` whenever a download changes or is removed. Returns an unsubscribe. */
+  subscribe(listener: (event: DownloadEvent) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  private emit(event: DownloadEvent): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(event)
+      } catch (error) {
+        console.error('[plexo] download listener failed', error)
+      }
+    }
+  }
+
+  /** The download shown on screen: the one most recently made current that isn't parked. */
+  private current(): DownloadRuntime | undefined {
+    let latest: DownloadRuntime | undefined
+    for (const runtime of this.runtimes.values()) {
+      if (!runtime.parked && (!latest || runtime.activeAt > latest.activeAt)) latest = runtime
+    }
+    return latest
   }
 
   private downloadsRoot(): string {
@@ -585,6 +630,9 @@ export class DownloadManager {
           const runtime = newRuntime(state, persisted.requestPayload, file, blocks)
           runtime.publicationPath = persisted.publicationPath
           runtime.publicationIdentity = persisted.publicationIdentity
+          runtime.activeAt = persisted.activeAt ?? state.startedAt
+          // Only a failed download stays parked: one that went on to complete is just done.
+          runtime.parked = persisted.parked === true && state.status === 'error'
           this.recomputeAggregates(runtime)
           restored.push(runtime)
         } catch {
@@ -594,18 +642,29 @@ export class DownloadManager {
     )
 
     // Plexo only ever tracks one current download — getCurrentDownload() always returns
-    // whichever restored runtime started most recently. Any other one restored alongside it is
-    // an orphan (most likely left over from before concurrent starts were blocked): nothing
-    // would ever look at it again, so left in `runtimes` it would sit there forever, invisibly
-    // failing every future start() with "a download is already in progress".
-    restored.sort((a, b) => b.state.startedAt - a.state.startedAt)
-    const [current, ...orphans] = restored
+    // whichever restored runtime was made current most recently. Any other one restored
+    // alongside it is an orphan (most likely left over from before concurrent starts were
+    // blocked): nothing would ever look at it again, so left in `runtimes` it would sit there
+    // forever, invisibly failing every future start() with "a download is already in progress".
+    // The exception is a parked download the queue still has an item for: it waits there, failed,
+    // to be retried.
+    const retained = await this.retained().catch(() => new Set<string>())
+    const kept = restored.filter((runtime) => runtime.parked && retained.has(runtime.state.id))
+    const candidates = restored
+      .filter((runtime) => !runtime.parked)
+      .sort((a, b) => b.activeAt - a.activeAt)
+    const [current, ...rest] = candidates
+    const orphans = [
+      ...rest,
+      ...restored.filter((runtime) => runtime.parked && !kept.includes(runtime))
+    ]
 
     await Promise.all(
       orphans.map((runtime) =>
         this.removePersistedDownload(runtime, runtime.file.path !== current?.file.path)
       )
     )
+    for (const runtime of kept) this.runtimes.set(runtime.state.id, runtime)
 
     if (current) {
       if (current.state.status === 'completed' && current.publicationIdentity) {
@@ -625,9 +684,7 @@ export class DownloadManager {
   /** A snapshot of the current download: an update with every block in it. */
   async getCurrentDownload(): Promise<DownloadUpdate | null> {
     await this.initialization
-    const latest = [...this.runtimes.values()].sort(
-      (a, b) => b.state.startedAt - a.state.startedAt
-    )[0]
+    const latest = this.current()
     if (!latest) return null
     const { blocks, ...state } = latest.state
     return structuredClone({ seq: latest.sentUpdates, state, blocks: blocks ?? latest.blocks })
@@ -643,6 +700,84 @@ export class DownloadManager {
       }
     }
     return false
+  }
+
+  /** Whether a download is running or paused: nothing else can start until it's done. */
+  async isBusy(): Promise<boolean> {
+    await this.initialization
+    return this.hasActiveDownload()
+  }
+
+  /** A download's state as it is now — a copy, without its blocks. */
+  async stateOf(id: string): Promise<Omit<DownloadState, 'blocks'> | undefined> {
+    await this.initialization
+    const runtime = this.runtimes.get(id)
+    if (!runtime) return undefined
+    const state: DownloadState = { ...runtime.state }
+    delete state.blocks
+    return structuredClone(state)
+  }
+
+  /** The current download's id and state (see current), if there is one. */
+  async currentState(): Promise<Omit<DownloadState, 'blocks'> | undefined> {
+    await this.initialization
+    const current = this.current()
+    return current ? this.stateOf(current.state.id) : undefined
+  }
+
+  /**
+   * Sets a failed download aside, keeping what it downloaded, so another can become current
+   * while it waits to be retried (see resumeParked). A download that can't be resumed has
+   * nothing worth keeping, and is removed instead.
+   */
+  async park(id: string): Promise<void> {
+    await this.initialization
+    const runtime = this.runtimes.get(id)
+    if (!runtime || runtime.state.status !== 'error') return
+    // Its run may still be winding down (streams closing, a non-resumable file being discarded).
+    await runtime.runPromise
+    if (runtime.state.resumable === false || runtime.state.bytesDownloaded === 0) {
+      await this.remove(id)
+      return
+    }
+    runtime.parked = true
+    await this.persistNow(runtime)
+  }
+
+  /**
+   * Resumes a parked (or failed) download as the current one, optionally from a new link to the
+   * same file — a file host's session link that expired, captured again. Whether the new link
+   * serves the same file is checked the way any response is (size, ETag, and if need be sample
+   * bytes; see confirmSameBytes), so a link to something else fails rather than mixing files.
+   * Resolves to whether it is downloading again.
+   */
+  async resumeParked(
+    id: string,
+    source?: Pick<StartDownloadRequest, 'url' | 'context'>
+  ): Promise<boolean> {
+    await this.initialization
+    const runtime = this.runtimes.get(id)
+    if (!runtime) return false
+    const { status, resumable } = runtime.state
+    if (status !== 'error' || resumable === false) return false
+    if (this.hasActiveDownload()) {
+      throw new Error('A download is already in progress — finish or remove it first.')
+    }
+    if (source) {
+      runtime.requestPayload = { ...runtime.requestPayload, ...source }
+      runtime.state.url = source.url
+    }
+    this.makeCurrent(runtime)
+    await this.resumeAfterVerifying(runtime, false)
+    return (runtime.state.status as DownloadStatus) === 'downloading'
+  }
+
+  /** Brings a download back on screen: its next update carries every block, which is what a
+   * window showing another download needs to switch over to it (see applyDownloadUpdate). */
+  private makeCurrent(runtime: DownloadRuntime): void {
+    runtime.parked = false
+    runtime.activeAt = Date.now()
+    runtime.sentBlocks = []
   }
 
   async start(requestPayload: StartDownloadRequest): Promise<string> {
@@ -757,6 +892,11 @@ export class DownloadManager {
     if (!runtime) return
     const { status, resumable } = runtime.state
     if (status !== 'paused' && !(status === 'error' && resumable !== false)) return
+    // A parked download resumed from the error screen it is still on becomes current again.
+    if (runtime.parked) {
+      if (this.hasActiveDownload()) return
+      this.makeCurrent(runtime)
+    }
 
     void this.resumeAfterVerifying(runtime, false)
   }
@@ -991,7 +1131,10 @@ export class DownloadManager {
       await this.cancel(id)
     }
     this.runtimes.delete(id)
-    if (runtime) await this.removePersistedDownload(runtime)
+    if (runtime) {
+      await this.removePersistedDownload(runtime)
+      this.emit({ type: 'removed', id })
+    }
   }
 
   async suspendAll(): Promise<void> {
@@ -1510,6 +1653,7 @@ export class DownloadManager {
         createDestination: () => runtime.file.writer(block.rangeStart + (attempt.startOffset ?? 0)),
         signal: AbortSignal.any([self.controller.signal, attempt.abort.signal]),
         acceptedVersions: runtime.acceptedVersions,
+        context: runtime.requestPayload.context,
         onResponse: (info) => (attempt.response = info),
         onNetworkProgress: (bytesThisRun) => {
           const delta = bytesThisRun - attempt.networkReceived
@@ -2029,7 +2173,8 @@ export class DownloadManager {
             runtime.requestPayload.url,
             block.rangeStart,
             block.rangeStart + local.length - 1,
-            connection
+            connection,
+            runtime.requestPayload.context
           )
           // A reply from a server still presenting an accepted label proves nothing here.
           if (compareVersion([seen], remote.version).kind !== 'same') continue
@@ -2076,6 +2221,7 @@ export class DownloadManager {
     // would put it back on screen after the renderer has already moved on.
     if (this.runtimes.get(runtime.state.id) !== runtime) return
     if (persist) this.schedulePersistence(runtime)
+    this.emit({ type: 'state', state: runtime.state })
     const window = this.getWindow()
     if (!window || window.isDestroyed()) return
     if (runtime.state.status === 'paused' || runtime.state.status === 'cancelled') {
@@ -2140,7 +2286,9 @@ export class DownloadManager {
           partialPath: runtime.file.path,
           publicationPath: runtime.publicationPath,
           publicationIdentity: runtime.publicationIdentity,
-          requestPayload: runtime.requestPayload
+          requestPayload: runtime.requestPayload,
+          parked: runtime.parked || undefined,
+          activeAt: runtime.activeAt
         }
         if (runtime.state.status === 'downloading' || runtime.state.status === 'paused') {
           await runtime.file.sync()

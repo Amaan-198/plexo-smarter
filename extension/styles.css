@@ -1,0 +1,354 @@
+/* Plexo's own look (src/renderer/src/assets/main.css): the same fonts, palette and small
+   monospace labels, so the extension reads as part of the app. */
+
+@font-face {
+  font-family: 'Manrope';
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('fonts/Manrope-Variable.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Roboto Mono';
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('fonts/RobotoMono-Variable.woff2') format('woff2');
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --card: #fafafa;
+  --input-bg: #ffffff;
+  --track: #e4e4e6;
+  --text: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-tertiary: #737377;
+  --border: #e0e0e2;
+  --border-strong: #b9b9bb;
+  --accent: #d97706;
+  --accent-on: #ffffff;
+  --success: #1f8a70;
+  --success-bg: #e6f6f2;
+  --success-border: #b8e6dc;
+  --warn-text: #92400e;
+  --warn-bg: #fef3c7;
+  --warn-border: #fde68a;
+  --danger: #dc2626;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
+  --neutral: #6b7280;
+  --mono: 'Roboto Mono', 'SF Mono', ui-monospace, Menlo, monospace;
+  --sans: 'Manrope', -apple-system, 'Segoe UI', 'Helvetica Neue', sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1e20;
+    --card: #202325;
+    --input-bg: #242729;
+    --track: #262a2d;
+    --text: #eae7e2;
+    --text-secondary: #a9adb2;
+    --text-tertiary: #8d9196;
+    --border: #2b2f33;
+    --border-strong: #33383c;
+    --accent: #d8a44c;
+    --accent-on: #1b1408;
+    --success: #4ea89a;
+    --success-bg: #22312e;
+    --success-border: #3a5450;
+    --warn-text: #e8bb6d;
+    --warn-bg: #33291a;
+    --warn-border: #54421f;
+    --danger: #eda3a3;
+    --danger-bg: #2c1c1c;
+    --danger-border: #4a2a2a;
+    --neutral: #8d9196;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+.label {
+  font: 500 10px/1 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.muted {
+  color: var(--text-secondary);
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+/* A status pill, as Plexo's title bar shows "2 NETWORKS COMBINED". */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border: 0.5px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--text-secondary);
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition:
+    background-color 0.2s,
+    color 0.2s,
+    border-color 0.2s;
+}
+
+.pill::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--neutral);
+}
+
+.pill[data-state='connected'] {
+  background: var(--success-bg);
+  border-color: var(--success-border);
+  color: var(--success);
+}
+
+.pill[data-state='connected']::before {
+  background: var(--success);
+  animation: glow 2s ease-in-out infinite;
+}
+
+.pill[data-state='unpaired'],
+.pill[data-state='waiting'] {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn-text);
+}
+
+.pill[data-state='unpaired']::before,
+.pill[data-state='waiting']::before {
+  background: var(--accent);
+}
+
+.pill[data-state='waiting']::before {
+  animation: glow 1.2s ease-in-out infinite;
+}
+
+.pill[data-state='offline'] {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+
+.pill[data-state='offline']::before {
+  background: var(--danger);
+}
+
+@keyframes glow {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font: 500 12.5px/1 var(--sans);
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    opacity 0.15s,
+    transform 0.05s;
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 55%);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.primary {
+  background: var(--accent);
+  color: var(--accent-on);
+}
+
+.primary:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--accent), transparent 20%);
+}
+
+.secondary {
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.secondary:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--card), var(--text) 5%);
+}
+
+.link {
+  height: auto;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font: 500 11px/1 var(--mono);
+}
+
+.link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+input[type='number'],
+textarea {
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: 12px/1.6 var(--mono);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+input[type='number'] {
+  height: 30px;
+  padding: 0 8px;
+}
+
+textarea {
+  width: 100%;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+/* A checkbox styled like Plexo's. */
+input[type='checkbox'] {
+  appearance: none;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--input-bg);
+  cursor: pointer;
+  display: grid;
+  place-content: center;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
+}
+
+input[type='checkbox']::after {
+  content: '';
+  width: 9px;
+  height: 5px;
+  margin-top: -2px;
+  border: solid var(--accent-on);
+  border-width: 0 0 2px 2px;
+  transform: rotate(-45deg) scale(0);
+  transition: transform 0.12s ease-out;
+}
+
+input[type='checkbox']:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+input[type='checkbox']:checked::after {
+  transform: rotate(-45deg) scale(1);
+}
+
+/* A switch, for the popup's one on/off choice. */
+.switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.switch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  border: none;
+  background: var(--track);
+}
+
+.switch input::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: none;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transform: none;
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.switch input:checked {
+  background: var(--accent);
+}
+
+.switch input:checked::after {
+  transform: translateX(14px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

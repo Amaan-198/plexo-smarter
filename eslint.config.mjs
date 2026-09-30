@@ -44,5 +44,12 @@ export default defineConfig(
       '@typescript-eslint/no-require-imports': 'off'
     }
   },
+  {
+    // The browser extension: plain JavaScript that the browser loads as-is, with the extension
+    // APIs as a global.
+    files: ['extension/**/*.js'],
+    languageOptions: { globals: { chrome: 'readonly' } },
+    rules: { '@typescript-eslint/explicit-function-return-type': 'off' }
+  },
   eslintConfigPrettier
 )

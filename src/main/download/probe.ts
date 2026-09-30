@@ -1,11 +1,11 @@
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { URL } from 'node:url'
-import type { ProbeResult } from '../../shared/types'
+import type { ProbeResult, RequestContext } from '../../shared/types'
 import { testKnobs } from '../testKnobs'
+import { applySetCookie, requestHeaders } from './requestContext'
 
 const MAX_REDIRECTS = 5
-const USER_AGENT = 'Plexo/1.0'
 // A server that accepts the connection and never answers would otherwise hang the probe — and
 // the link field's "Checking…" — forever. Same budget as a stalled chunk, for the whole probe:
 // redirects included, so a chain of slow hops can't stretch it.
@@ -26,7 +26,11 @@ interface ProbeResponse {
 
 /** GET with a 1-byte range: cheaper than fetching the body, and unlike HEAD it
  * also tells us (via the 206 status) whether range requests actually work. */
-function requestOneByte(url: URL, deadline: number): Promise<ProbeResponse> {
+function requestOneByte(
+  url: URL,
+  context: RequestContext | undefined,
+  deadline: number
+): Promise<ProbeResponse> {
   return new Promise((resolve, reject) => {
     const requester = url.protocol === 'https:' ? httpsRequest : httpRequest
     const req = requester(
@@ -35,7 +39,7 @@ function requestOneByte(url: URL, deadline: number): Promise<ProbeResponse> {
         hostname: url.hostname.replace(/^\[|\]$/g, ''),
         port: url.port || undefined,
         path: `${url.pathname}${url.search}`,
-        headers: { 'User-Agent': USER_AGENT, Range: 'bytes=0-0' }
+        headers: { ...requestHeaders(url, context), Range: 'bytes=0-0' }
       },
       (res) => {
         clearTimeout(timer)
@@ -108,14 +112,25 @@ function fileNameFromHeaders(headers: Headers, url: URL): string {
 }
 
 async function requestFollowingRedirects(
-  rawUrl: string
-): Promise<{ current: URL; response: ProbeResponse | null }> {
+  rawUrl: string,
+  initialContext: RequestContext | undefined
+): Promise<{ current: URL; response: ProbeResponse | null; context: RequestContext | undefined }> {
   let current = new URL(rawUrl)
   let response: ProbeResponse | null = null
+  let context = initialContext
   const deadline = Date.now() + PROBE_TIMEOUT_MS
 
   for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect += 1) {
-    response = await requestOneByte(current, deadline)
+    response = await requestOneByte(current, context, deadline)
+    // A cookie set on the way (a file host handing out its file server's cookie) goes on with the
+    // download, as it would in the browser. Only a download that already has a browser session
+    // keeps cookies: a pasted link stays as anonymous as it was.
+    if (context?.cookies && response.headers['set-cookie']) {
+      context = {
+        ...context,
+        cookies: applySetCookie(context.cookies, current, response.headers['set-cookie'])
+      }
+    }
     if (response.statusCode >= 300 && response.statusCode < 400) {
       const location = headerValue(response.headers, 'location')
       if (!location) break
@@ -125,11 +140,21 @@ async function requestFollowingRedirects(
     break
   }
 
-  return { current, response }
+  return { current, response, context }
 }
 
-export async function probeUrl(rawUrl: string): Promise<ProbeResult> {
-  const { current, response } = await requestFollowingRedirects(rawUrl)
+export async function probeUrl(rawUrl: string, context?: RequestContext): Promise<ProbeResult> {
+  return (await probeWithContext(rawUrl, context)).probe
+}
+
+/** Probes `rawUrl` with `context`, and gives back the context as the redirects left it (see
+ * requestFollowingRedirects) — what the download should go on with. */
+export async function probeWithContext(
+  rawUrl: string,
+  initialContext?: RequestContext
+): Promise<{ probe: ProbeResult; context: RequestContext | undefined }> {
+  const { current, response, context } = await requestFollowingRedirects(rawUrl, initialContext)
+  const attachment = !!headerValue(response?.headers ?? {}, 'content-disposition')
 
   // An empty file can't satisfy a request for its first byte: the server answers 416 and gives
   // the size as `bytes */0`. That's a valid, empty download, not an error.
@@ -138,14 +163,18 @@ export async function probeUrl(rawUrl: string): Promise<ProbeResult> {
     /^\s*bytes\s+\*\/0\s*$/i.test(headerValue(response.headers, 'content-range') ?? '')
   ) {
     return {
-      requestedUrl: rawUrl,
-      finalUrl: current.toString(),
-      supportsRanges: false,
-      totalBytes: 0,
-      suggestedFileName: fileNameFromHeaders(response.headers, current),
-      contentType: headerValue(response.headers, 'content-type') ?? null,
-      etag: headerValue(response.headers, 'etag') ?? null,
-      lastModified: headerValue(response.headers, 'last-modified') ?? null
+      probe: {
+        requestedUrl: rawUrl,
+        finalUrl: current.toString(),
+        supportsRanges: false,
+        totalBytes: 0,
+        suggestedFileName: fileNameFromHeaders(response.headers, current),
+        contentType: headerValue(response.headers, 'content-type') ?? null,
+        etag: headerValue(response.headers, 'etag') ?? null,
+        lastModified: headerValue(response.headers, 'last-modified') ?? null,
+        attachment
+      },
+      context
     }
   }
 
@@ -172,13 +201,17 @@ export async function probeUrl(rawUrl: string): Promise<ProbeResult> {
   }
 
   return {
-    requestedUrl: rawUrl,
-    finalUrl: current.toString(),
-    supportsRanges,
-    totalBytes,
-    suggestedFileName: fileNameFromHeaders(response.headers, current),
-    contentType: headerValue(response.headers, 'content-type') ?? null,
-    etag: headerValue(response.headers, 'etag') ?? null,
-    lastModified: headerValue(response.headers, 'last-modified') ?? null
+    probe: {
+      requestedUrl: rawUrl,
+      finalUrl: current.toString(),
+      supportsRanges,
+      totalBytes,
+      suggestedFileName: fileNameFromHeaders(response.headers, current),
+      contentType: headerValue(response.headers, 'content-type') ?? null,
+      etag: headerValue(response.headers, 'etag') ?? null,
+      lastModified: headerValue(response.headers, 'last-modified') ?? null,
+      attachment
+    },
+    context
   }
 }

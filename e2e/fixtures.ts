@@ -106,6 +106,8 @@ export class PlexoApp {
             // Fixed for the same reason, and for downloads started through the UI.
             PLEXO_E2E_STREAMS: '2',
             PLEXO_E2E_INTERFACES: interfacesEnv(NETWORKS),
+            // The browser extension's port, picked free so apps running side by side don't clash.
+            PLEXO_BRIDGE_PORT: '0',
             ...this.extraEnv
           }
         })
