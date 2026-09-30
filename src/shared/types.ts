@@ -279,6 +279,8 @@ export interface QueueItem {
   problem?: QueueItemProblem
   /** Downloads started for it, retries included. */
   attempts: number
+  /** When it completed or failed. */
+  finishedAt?: number
 }
 
 export interface BrowserBridgeState {

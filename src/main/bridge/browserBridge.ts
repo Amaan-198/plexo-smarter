@@ -213,6 +213,9 @@ export class BrowserBridge {
         }
         return send(res, 200, await this.queue.browserView())
       }
+      if (req.method === 'POST' && path === '/v1/queue/command') {
+        return await this.command(req, res)
+      }
       throw new HttpError(404, 'Not found')
     } catch (error) {
       if (res.headersSent) return
@@ -300,6 +303,31 @@ export class BrowserBridge {
     if (links.length === 0) throw new HttpError(400, 'No usable link')
     const result = await this.queue.addLinks(links, { source: 'browser', start: true })
     send(res, 200, result)
+  }
+
+  /** What the extension's popup can do to a queue item: the same as Plexo's own queue panel. */
+  private async command(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.authorized(req)) throw new HttpError(401, 'This browser isn’t connected to Plexo')
+    const { kind, id } = await readBody(req)
+    if (typeof id !== 'string' || !id) throw new HttpError(400, 'Which item?')
+    switch (kind) {
+      case 'pause':
+        await this.queue.pauseItem(id)
+        break
+      case 'resume':
+        await this.queue.resumeItem(id)
+        break
+      case 'retry':
+        await this.queue.retry(id)
+        break
+      // Cancels a download (what it fetched goes); for a finished one, only the list entry.
+      case 'remove':
+        await this.queue.remove(id)
+        break
+      default:
+        throw new HttpError(400, 'Unknown command')
+    }
+    send(res, 200, await this.queue.browserView())
   }
 
   private bringWindowForward(): void {

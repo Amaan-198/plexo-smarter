@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { request as httpRequest } from 'node:http'
 import type { QueueItem, QueueState } from '../src/shared/types'
 import { expect, test, type PlexoApp } from './fixtures'
@@ -342,6 +342,49 @@ test.describe('browser extension endpoint @smoke', () => {
     await expectSavedAs(queue.items[0], pasted)
     expect(queue.items[1].status).toBe('completed')
     expect(sha256(await readFile(queue.items[1].destinationPath!))).toBe(captured.sha256)
+  })
+
+  test('the browser can pause, resume and cancel a queued download, and a second click on one is not a second download', async ({
+    plexo,
+    serve
+  }) => {
+    const origin = await serve({ size: 2 * 1024 * 1024, seed: 41, bytesPerSecond: 100_000 })
+    const browser = await browserFor(plexo)
+    await browser.pair(plexo)
+    const page = 'https://files.example/download'
+    await browser.send([
+      { url: origin.url('/d/first/movie.part1.rar'), referrer: page, fileName: 'movie.part1.rar' }
+    ])
+    // The download button clicked again: a new link, the same file.
+    expect(
+      await browser.send([{ url: origin.url('/d/second/movie.part1.rar'), referrer: page }])
+    ).toMatchObject({ added: 0, refreshed: 0, duplicates: 1 })
+
+    const command = async (kind: string, id: string): Promise<void> => {
+      const response = await browser.request('/v1/queue/command', { body: { kind, id } })
+      expect(response.status).toBe(200)
+    }
+    const started = await waitForQueue(plexo, (queue) =>
+      queue.items.some((item) => item.status === 'active' && (item.bytesDownloaded ?? 0) > 0)
+    )
+    expect(started.items).toHaveLength(1)
+    const [item] = started.items
+
+    await command('pause', item.id)
+    await plexo.waitForStatus('paused')
+    const live = (await (await browser.request('/v1/queue', { method: 'GET' })).json()) as {
+      items: { paused: boolean }[]
+    }
+    expect(live.items[0].paused).toBe(true)
+
+    await command('resume', item.id)
+    await plexo.waitForStatus('downloading')
+
+    await command('remove', item.id)
+    await waitForQueue(plexo, (queue) => queue.items.length === 0)
+    // Gone, and what it had fetched with it.
+    await expect.poll(() => plexo.current()).toBeNull()
+    await expect.poll(async () => readdir(plexo.dirs.dest)).toEqual([])
   })
 
   test('an expired link picks up where it stopped once the browser sends a fresh one', async ({

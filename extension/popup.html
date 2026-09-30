@@ -129,11 +129,76 @@
         white-space: pre;
       }
 
+      .queue .line {
+        position: relative;
+      }
+
       .queue .state {
         flex: none;
         color: var(--text-secondary);
         font-variant-numeric: tabular-nums;
-        transition: color 0.2s;
+        transition:
+          color 0.2s,
+          opacity 0.15s;
+      }
+
+      /* On hover (or keyboard focus) a row's buttons take the place of its status, over a fade
+         so a long name runs out beneath them rather than colliding. */
+      .queue .actions {
+        position: absolute;
+        top: 50%;
+        right: 0;
+        display: flex;
+        gap: 2px;
+        padding-left: 22px;
+        background: linear-gradient(to right, transparent, var(--bg) 18px);
+        transform: translateY(-50%);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s;
+      }
+
+      .queue li:hover .actions,
+      .queue li:focus-within .actions {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .queue li:hover .state,
+      .queue li:focus-within .state {
+        opacity: 0;
+      }
+
+      .queue .act {
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text-secondary);
+        font: 600 10.5px/1 var(--mono);
+      }
+
+      .queue .act svg {
+        width: 13px;
+        height: 13px;
+      }
+
+      .queue .act:hover:not(:disabled) {
+        background: var(--track);
+        color: var(--text);
+      }
+
+      .queue .act[data-kind='remove']:hover:not(:disabled) {
+        color: var(--danger);
+      }
+
+      .queue .act.confirming {
+        width: auto;
+        padding: 0 8px;
+        background: var(--danger-bg);
+        color: var(--danger);
+        animation: rise 0.15s ease-out;
       }
 
       .queue li[data-tone='done'] .name {

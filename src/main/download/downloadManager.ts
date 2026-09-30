@@ -450,6 +450,12 @@ function newRuntime(
   }
 }
 
+/** Orders downloads by when each was last made current, newest first; between two made current
+ * at the same moment (one copied from the other), the one started later. */
+function newerFirst(a: DownloadRuntime, b: DownloadRuntime): number {
+  return b.activeAt - a.activeAt || b.state.startedAt - a.state.startedAt
+}
+
 function requestedVersion(request: StartDownloadRequest): FileVersion {
   return { etag: request.etag, lastModified: request.lastModified, totalBytes: request.totalBytes }
 }
@@ -518,7 +524,7 @@ export class DownloadManager {
   private current(): DownloadRuntime | undefined {
     let latest: DownloadRuntime | undefined
     for (const runtime of this.runtimes.values()) {
-      if (!runtime.parked && (!latest || runtime.activeAt > latest.activeAt)) latest = runtime
+      if (!runtime.parked && (!latest || newerFirst(runtime, latest) < 0)) latest = runtime
     }
     return latest
   }
@@ -650,9 +656,7 @@ export class DownloadManager {
     // to be retried.
     const retained = await this.retained().catch(() => new Set<string>())
     const kept = restored.filter((runtime) => runtime.parked && retained.has(runtime.state.id))
-    const candidates = restored
-      .filter((runtime) => !runtime.parked)
-      .sort((a, b) => b.activeAt - a.activeAt)
+    const candidates = restored.filter((runtime) => !runtime.parked).sort(newerFirst)
     const [current, ...rest] = candidates
     const orphans = [
       ...rest,

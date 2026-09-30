@@ -201,8 +201,11 @@ test('a download started in the browser is handed to Plexo with its session', as
     await expect(row).toHaveCount(1)
     await expect(row).toContainText('big.bin')
     await expect(row).toContainText('Done')
-    await plexo.api.queueCommand({ kind: 'remove', id: item.id })
+    // Its buttons show on hover; a finished file's only takes it off the list.
+    await row.hover()
+    await row.locator('button[data-kind="remove"]').click()
     await expect(row).toHaveCount(0)
+    expect((await plexo.api.getQueue()).items).toEqual([])
     await expect(popup.locator('#queue-empty')).toBeVisible()
 
     // And the browser's own copy is gone from its list.

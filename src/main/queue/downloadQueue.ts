@@ -166,6 +166,7 @@ function sanitizeStoredItem(value: unknown): StoredItem | null {
       ? (value.problem as QueueItemProblem)
       : undefined,
     attempts: optionalCount(value.attempts) ?? 0,
+    finishedAt: optionalCount(value.finishedAt),
     context: link.context
   }
 }
@@ -307,6 +308,8 @@ export class DownloadQueue {
       bytesDownloaded: number
       speedBytesPerSec: number
       paused: boolean
+      addedAt: number
+      finishedAt?: number
     }[]
   }> {
     await this.loaded
@@ -323,7 +326,9 @@ export class DownloadQueue {
           totalBytes: live?.totalBytes || item.totalBytes || 0,
           bytesDownloaded: live?.bytesDownloaded ?? item.bytesDownloaded ?? 0,
           speedBytesPerSec: live?.status === 'downloading' ? live.speedBytesPerSec : 0,
-          paused: live?.status === 'paused'
+          paused: live?.status === 'paused',
+          addedAt: item.addedAt,
+          finishedAt: item.finishedAt
         }
       })
     }
@@ -402,19 +407,33 @@ export class DownloadQueue {
       if (!link) continue
       const pageUrl = link.pageUrl ?? link.context?.referrer
       const pageHost = hostOf(pageUrl)
+      // The browser may not have settled the file's name yet; a file host's link ends with it.
+      const linkName = link.fileName || nameFromUrl(link.url)
       // The same file from the same page (or, for one that expired, the same site): same name,
-      // and a page known on both sides — a name alone could be anyone's "video.mp4".
+      // and a page known on both sides — a name alone could be anyone's "video.mp4". Every
+      // click on a file host's download button makes a new link, so the link itself can't say.
+      const sameFile = (item: StoredItem): boolean =>
+        !!pageUrl &&
+        sameName(item.fileName || nameFromUrl(item.url), linkName) &&
+        (item.pageUrl === pageUrl ||
+          (item.problem === 'expired' && pageHost !== null && hostOf(item.pageUrl) === pageHost))
+      if (
+        options.source === 'browser' &&
+        this.items.some(
+          (item) => (item.status === 'active' || item.status === 'starting') && sameFile(item)
+        )
+      ) {
+        // It's downloading already: the new link is the same file.
+        result.duplicates++
+        continue
+      }
       const refreshable =
-        options.source === 'browser' && pageUrl
+        options.source === 'browser'
           ? this.items.find(
               (item) =>
                 (item.status === 'failed' || item.status === 'queued') &&
                 item.url !== link.url &&
-                sameName(item.fileName, link.fileName) &&
-                (item.pageUrl === pageUrl ||
-                  (item.problem === 'expired' &&
-                    pageHost !== null &&
-                    hostOf(item.pageUrl) === pageHost))
+                sameFile(item)
             )
           : undefined
       if (refreshable) {
@@ -466,6 +485,7 @@ export class DownloadQueue {
     item.status = 'queued'
     item.error = undefined
     item.problem = undefined
+    item.finishedAt = undefined
   }
 
   /**
@@ -510,6 +530,7 @@ export class DownloadQueue {
       // Only a link that plainly doesn't work fails now; anything else gets its turn.
       if (failure.problem === 'expired') {
         item.status = 'failed'
+        item.finishedAt = Date.now()
         item.error = failure.error
         item.problem = failure.problem
       } else {
@@ -543,6 +564,36 @@ export class DownloadQueue {
       const current = await this.manager?.currentState()
       if (current?.status === 'downloading' && this.itemFor(current.id)) {
         await this.manager?.pause(current.id)
+      }
+    })
+  }
+
+  /** Pauses an item's download, if it's the one running. The queue waits on it, paused, as it
+   * would on a download paused in the window. */
+  async pauseItem(id: string): Promise<void> {
+    await this.loaded
+    const downloadId = this.items.find(
+      (entry) => entry.id === id && entry.status === 'active'
+    )?.downloadId
+    if (!downloadId) return
+    await this.enqueue(async () => {
+      if ((await this.manager?.stateOf(downloadId))?.status === 'downloading') {
+        await this.manager?.pause(downloadId)
+      }
+    })
+  }
+
+  /** Resumes an item's paused download, and the queue with it. */
+  async resumeItem(id: string): Promise<void> {
+    await this.loaded
+    const item = this.items.find((entry) => entry.id === id && entry.status === 'active')
+    if (!item?.downloadId) return
+    const downloadId = item.downloadId
+    this.running = true
+    this.changed()
+    await this.enqueue(async () => {
+      if ((await this.manager?.stateOf(downloadId))?.status === 'paused') {
+        this.manager?.resume(downloadId)
       }
     })
   }
@@ -654,6 +705,7 @@ export class DownloadQueue {
       // with, as far as the user is concerned.
       if (item.status === 'active') {
         item.status = 'failed'
+        item.finishedAt = Date.now()
         item.problem = 'cancelled'
         item.error = 'Removed'
       }
@@ -689,6 +741,7 @@ export class DownloadQueue {
       case 'completed':
         if (item.status === 'completed') return
         item.status = 'completed'
+        item.finishedAt = state.completedAt ?? Date.now()
         item.destinationPath = state.destinationPath
         item.fileName = state.fileName
         item.error = undefined
@@ -727,6 +780,7 @@ export class DownloadQueue {
       this.items = [...this.items.filter((entry) => entry !== item), item]
     } else {
       item.status = 'failed'
+      item.finishedAt = Date.now()
       item.error = failure.error
       item.problem = failure.problem
       this.session.failed++

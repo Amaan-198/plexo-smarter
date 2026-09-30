@@ -117,6 +117,17 @@ export async function connectionStatus(settings) {
   }
 }
 
+/** Does something to a queue item — 'pause', 'resume', 'retry' or 'remove' — and resolves to
+ * the queue as it is afterwards. */
+export function queueCommand(settings, kind, id) {
+  return plexoFetch('/v1/queue/command', {
+    method: 'POST',
+    port: settings.port,
+    token: settings.token,
+    body: { kind, id }
+  })
+}
+
 /** Plexo's queue, live: each item's name and where it's at (see the app's browserView). */
 export function fetchQueue(settings) {
   return plexoFetch('/v1/queue', { port: settings.port, token: settings.token, timeoutMs: 2000 })

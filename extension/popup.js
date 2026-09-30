@@ -4,6 +4,7 @@ import {
   formatBytes,
   loadSettings,
   normalizeDomain,
+  queueCommand,
   saveSettings,
   splitName
 } from './shared.js'
@@ -29,8 +30,101 @@ function describeRules(settings) {
 
 // --- the queue --------------------------------------------------------------------------------
 
-/** What's happening now first, then what's next, then what's done with. */
-const ORDER = { active: 0, starting: 1, queued: 2, failed: 3, completed: 4 }
+/** How long Cancel waits for its second click before standing down. */
+const CONFIRM_MS = 3000
+const isRunning = (item) => item.status === 'active' || item.status === 'starting'
+const isFinished = (item) => item.status === 'completed' || item.status === 'failed'
+
+/**
+ * The rows to show, newest on top: what's waiting (the last in line highest, the next one just
+ * above the download), then what's downloading, then what finished (most recent first). With
+ * more than fit, what's downloading always shows, then the next few in line and the latest
+ * few finished.
+ */
+function pickRows(items) {
+  const running = items.filter(isRunning)
+  const waiting = items.filter((item) => item.status === 'queued')
+  const finished = items
+    .filter(isFinished)
+    .sort((a, b) => (b.finishedAt ?? b.addedAt) - (a.finishedAt ?? a.addedAt))
+  const room = Math.max(0, MAX_ROWS - running.length)
+  let next = Math.min(waiting.length, Math.max(0, room - Math.min(finished.length, 2)))
+  const done = Math.min(finished.length, room - next)
+  next = Math.min(waiting.length, room - done)
+  return [...waiting.slice(0, next).reverse(), ...running, ...finished.slice(0, done)]
+}
+
+const ICONS = {
+  pause: '<path d="M9 6v12M15 6v12"/>',
+  resume: '<path d="M8 5.5v13l10.5-6.5z"/>',
+  retry: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/>',
+  remove: '<path d="M6 6l12 12M18 6L6 18"/>'
+}
+
+/** The row's buttons for what can be done to the item now. */
+function actionsFor(item) {
+  if (item.status === 'active') {
+    return [
+      item.paused ? { kind: 'resume', label: 'Resume' } : { kind: 'pause', label: 'Pause' },
+      { kind: 'remove', label: 'Cancel download', confirm: true }
+    ]
+  }
+  if (item.status === 'starting') return [{ kind: 'remove', label: 'Cancel', confirm: true }]
+  if (item.status === 'queued') return [{ kind: 'remove', label: 'Cancel' }]
+  if (item.status === 'failed') {
+    return [
+      { kind: 'retry', label: 'Retry' },
+      { kind: 'remove', label: 'Remove' }
+    ]
+  }
+  return [{ kind: 'remove', label: 'Remove from list (the file stays)' }]
+}
+
+function iconSvg(paths) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`
+}
+
+async function run(kind, id) {
+  const settings = await loadSettings()
+  try {
+    showQueue(await queueCommand(settings, kind, id))
+  } catch {
+    await refreshQueue()
+  }
+}
+
+function buildActions(row, item) {
+  row.actions.replaceChildren(
+    ...actionsFor(item).map((action) => {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'act'
+      button.dataset.kind = action.kind
+      button.title = action.label
+      button.setAttribute('aria-label', `${action.label}: ${item.name}`)
+      button.innerHTML = iconSvg(ICONS[action.kind])
+      let timer
+      button.addEventListener('click', () => {
+        // What it downloaded goes with it: a second click says so.
+        if (action.confirm && !button.classList.contains('confirming')) {
+          button.classList.add('confirming')
+          button.textContent = 'Cancel?'
+          button.setAttribute('aria-label', `Confirm: cancel ${item.name}`)
+          timer = setTimeout(() => {
+            button.classList.remove('confirming')
+            button.innerHTML = iconSvg(ICONS[action.kind])
+            button.setAttribute('aria-label', `${action.label}: ${item.name}`)
+          }, CONFIRM_MS)
+          return
+        }
+        clearTimeout(timer)
+        button.disabled = true
+        void run(action.kind, item.id)
+      })
+      return button
+    })
+  )
+}
 
 /** An item's status in a few words, and how to color it. */
 function describe(item) {
@@ -78,20 +172,21 @@ function rowFor(item) {
   name.append(head, tail)
   const state = document.createElement('span')
   state.className = 'state'
-  line.append(name, state)
+  const actions = document.createElement('span')
+  actions.className = 'actions'
+  line.append(name, state, actions)
   const bar = document.createElement('div')
   bar.className = 'bar'
   const fill = document.createElement('div')
   bar.append(fill)
   li.append(line, bar)
-  row = { li, name, head, tail, state, bar, fill }
+  row = { li, name, head, tail, state, actions, bar, fill, signature: '' }
   rows.set(item.id, row)
   return row
 }
 
 function showQueue(queue) {
-  const items = [...queue.items].sort((a, b) => ORDER[a.status] - ORDER[b.status])
-  const shown = items.slice(0, MAX_ROWS)
+  const shown = pickRows(queue.items)
   const list = $('queue')
 
   for (const [id, row] of rows) {
@@ -110,6 +205,13 @@ function showQueue(queue) {
       row.name.title = item.name
     }
     row.state.textContent = text
+    // Rebuilt only when what can be done changes, so a Cancel waiting for its confirming
+    // click isn't reset by the next refresh.
+    const signature = `${item.status}:${item.paused}`
+    if (row.signature !== signature) {
+      row.signature = signature
+      buildActions(row, item)
+    }
     row.li.dataset.tone = tone
     row.li.dataset.paused = String(item.paused)
     const progress = item.status === 'active' && item.totalBytes > 0
@@ -125,7 +227,7 @@ function showQueue(queue) {
   $('queue-summary').textContent =
     queue.items.length > 0 ? `${done} of ${queue.items.length} done` : ''
   $('queue-empty').hidden = queue.items.length > 0
-  const more = items.length - shown.length
+  const more = queue.items.length - shown.length
   $('queue-more').hidden = more <= 0
   $('queue-more').textContent = `+ ${more} more in Plexo`
   $('queue-block').hidden = false
