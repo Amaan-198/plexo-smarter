@@ -619,6 +619,30 @@ test.describe('queue safety', () => {
     const queue = await waitForQueue(plexo, allDone)
     await expectSavedAs(queue.items[0], other)
   })
+
+  test('the folder can’t change under a download under way, and says why', async ({
+    plexo,
+    serve,
+    dirs
+  }) => {
+    const origin = await serve({ size: 1024 * 1024, seed: 95, bytesPerSecond: 40_000 })
+    await plexo.api.addToQueue([{ url: origin.url('/files/held.bin') }], { start: true })
+    await waitForQueue(plexo, (queue) => (queue.items[0]?.bytesDownloaded ?? 0) > 0)
+    const other = join(dirs.dest, 'other')
+    await mkdir(other)
+
+    await plexo.api.queueCommand({ kind: 'setDestination', dir: other })
+    expect((await queueOf(plexo)).destinationDir).toBe(dirs.dest)
+    await plexo.page.getByRole('button', { name: /^Queue/ }).click()
+    await expect(plexo.page.getByRole('button', { name: 'Browse…' })).toBeDisabled()
+    await expect(plexo.page.getByText('held.bin has started in this folder')).toBeVisible()
+
+    // Once it's done, the folder is free to change.
+    await waitForQueue(plexo, allDone)
+    await expect(plexo.page.getByRole('button', { name: 'Browse…' })).toBeEnabled()
+    await plexo.api.queueCommand({ kind: 'setDestination', dir: other })
+    expect((await queueOf(plexo)).destinationDir).toBe(other)
+  })
 })
 
 test.describe('the queue and the main screen', () => {

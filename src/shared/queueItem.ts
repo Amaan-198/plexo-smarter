@@ -22,3 +22,12 @@ export const isFailure = (item: Pick<QueueItem, 'status' | 'problem'>): boolean 
 /** Cancelled by the user: done with, as a completed item is. */
 export const isCancelled = (item: Pick<QueueItem, 'status' | 'problem'>): boolean =>
   item.status === 'failed' && item.problem === 'cancelled'
+
+/** Has a download under way in the queue's folder — running, paused, or failed with part of it
+ * kept for Retry — which will finish there: the folder can't change under it. */
+export const holdsFolder = (
+  item: Pick<QueueItem, 'status' | 'problem' | 'downloadId' | 'bytesDownloaded'>
+): boolean =>
+  item.status === 'starting' ||
+  item.status === 'active' ||
+  (!!item.downloadId && !!item.bytesDownloaded && item.status !== 'completed' && !isCancelled(item))

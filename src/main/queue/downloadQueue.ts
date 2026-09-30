@@ -14,7 +14,7 @@ import type {
   QueueLink,
   QueueState
 } from '../../shared/types'
-import { isCancelled, isFailure, nameOf } from '../../shared/queueItem'
+import { holdsFolder, isCancelled, isFailure, nameOf } from '../../shared/queueItem'
 import type { DownloadEvent, DownloadManager } from '../download/downloadManager'
 import { probeWithContext } from '../download/probe'
 import { readJson, updateJson } from '../jsonFile'
@@ -591,6 +591,9 @@ export class DownloadQueue {
     if (typeof dir !== 'string' || !isAbsolute(dir)) return
     // Set before the saved queue has loaded, it would be overwritten by the saved folder.
     await this.loaded
+    // A download under way finishes where it started: the folder waits until none is (see the
+    // window's QueueDestination, which says so).
+    if (this.items.some(holdsFolder)) return
     this.destinationDir = dir
     this.stoppedBecause = undefined
     this.changed()
