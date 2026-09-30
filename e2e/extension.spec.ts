@@ -19,6 +19,7 @@ const EXTENSION = resolve(__dirname, '..', 'extension')
 declare const chrome: {
   storage: { local: { set: (items: Record<string, unknown>) => Promise<void> } }
   downloads: { search: (query: object) => Promise<{ url: string; state: string }[]> }
+  runtime: { getContexts: (filter: object) => Promise<{ documentUrl?: string }[]> }
 }
 
 function chromiumPath(): string | null {
@@ -147,7 +148,22 @@ test('a download started in the browser is handed to Plexo with its session', as
     await page.goto(site.page)
     await page.click('#download')
     // The page says where the download went.
-    await expect(page.getByRole('status').filter({ hasText: 'Sent to Plexo' })).toBeVisible()
+    const card = page.getByRole('status').filter({ hasText: 'Sent to Plexo' })
+    await expect(card).toBeVisible()
+    // Clicking it shows the queue: the toolbar popup, or the same page in a small window.
+    await card.click()
+    // The toolbar popup opened (or, where a browser won't open it for an extension, the same
+    // page as a window).
+    await expect
+      .poll(() =>
+        browser.worker.evaluate(async () =>
+          (await chrome.runtime.getContexts({})).some((context) =>
+            context.documentUrl?.endsWith('/popup.html')
+          )
+        )
+      )
+      .toBe(true)
+    await expect(card).toBeHidden()
 
     const queue = await waitForQueue(plexo, (state) =>
       state.items.some((item) => item.status === 'completed')

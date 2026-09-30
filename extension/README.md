@@ -14,7 +14,7 @@ Hands downloads you start in Microsoft Edge or Google Chrome to [Plexo](../READM
 - It sends Plexo the link, the file name, the page it came from (Referer), the browser's User-Agent, and the browser's cookies for the link.
 - Plexo queued it: the browser's download is cancelled and taken off its list. Plexo isn't running or said no: the browser's download resumes, as if the extension weren't there.
 - Right-click any link → **Download with Plexo** does the same for a link that hasn't started downloading.
-- A small card in the page's corner confirms each hand-over ("Sent to Plexo", "New link sent to Plexo", "Already in Plexo's queue"), or says why the browser kept the download ("Plexo isn't running"). It leaves by itself after a few seconds; on a page an extension can't touch, a system notification says it instead. It can be turned off in the settings.
+- A small card in the page's corner confirms each hand-over ("Sent to Plexo", "New link sent to Plexo", "Already in Plexo's queue"), or says why the browser kept the download ("Plexo isn't running"). Clicking it opens the toolbar popup with Plexo's queue. It leaves by itself after a few seconds; on a page an extension can't touch, a system notification says it instead. It can be turned off in the settings.
 - The toolbar popup shows Plexo's queue as it is right now — what's downloading and how fast, what's waiting, what finished or failed — read from Plexo every second while the popup is open.
 - Downloads in private windows are never sent.
 

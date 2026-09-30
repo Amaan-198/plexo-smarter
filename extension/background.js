@@ -38,6 +38,34 @@ chrome.downloads.onCreated.addListener((item) => {
   void takeOver(item).catch((error) => console.error('[plexo] hand-over failed', error))
 })
 
+// The confirmation card, or its notification, was clicked: show the queue.
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (sender.id !== chrome.runtime.id || message?.type !== 'plexo:show-queue') return
+  void showQueue(sender.tab?.windowId)
+})
+chrome.notifications.onClicked.addListener((id) => {
+  void chrome.notifications.clear(id)
+  void showQueue()
+})
+
+/** Opens the toolbar popup — Plexo's queue, live. Where the browser won't open it on the
+ * extension's say-so, the same page opens as a small window instead. */
+async function showQueue(windowId) {
+  try {
+    await chrome.action.openPopup(windowId === undefined ? undefined : { windowId })
+  } catch {
+    await chrome.windows
+      .create({
+        url: chrome.runtime.getURL('popup.html'),
+        type: 'popup',
+        width: 340,
+        height: 460,
+        focused: true
+      })
+      .catch(() => {})
+  }
+}
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== MENU_ID || !info.linkUrl) return
   void sendLink(info.linkUrl, tab?.url ?? info.pageUrl, tab?.incognito === true, tab?.id)

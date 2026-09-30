@@ -104,6 +104,19 @@ function renderToast(message, showMs) {
       animation: drain linear forwards; animation-duration: ${showMs}ms;
     }
     .card:hover .timer { animation-play-state: paused; }
+    /* The whole card opens Plexo's queue: it lifts a little, and an arrow says where it goes. */
+    .card.opens { cursor: pointer; transition: transform 160ms ease-out, box-shadow 160ms ease-out; }
+    .card.opens:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 18px 42px rgba(0,0,0,0.2), 0 3px 10px rgba(0,0,0,0.1);
+    }
+    .card.opens:focus-visible { outline: 2px solid var(--tone); outline-offset: 2px; }
+    .go {
+      position: absolute; right: 12px; bottom: 11px; width: 14px; height: 14px; color: var(--muted);
+      opacity: 0; transform: translateX(-3px); transition: opacity 160ms, transform 160ms;
+    }
+    .go svg { width: 14px; height: 14px; }
+    .card.opens:hover .go, .card.opens:focus-visible .go { opacity: 1; transform: none; }
     @keyframes in { from { opacity: 0; transform: translateY(10px) scale(0.98); } }
     @keyframes out { to { opacity: 0; transform: translateY(6px) scale(0.98); } }
     @keyframes drain { to { transform: scaleX(0); } }
@@ -169,7 +182,19 @@ function renderToast(message, showMs) {
   const timer = document.createElement('div')
   timer.className = 'timer'
 
-  card.append(icon, text, close, timer)
+  // Opening the queue is the extension's to do: this asks it. Only a real click or key press
+  // counts — a page can reach into this card, but it can't make an event that is trusted.
+  const canOpen = typeof chrome !== 'undefined' && !!chrome.runtime?.id
+  const go = document.createElement('div')
+  go.className = 'go'
+  go.innerHTML = svg('<path d="M9 6l6 6-6 6"/>')
+  if (canOpen) {
+    card.classList.add('opens')
+    card.tabIndex = 0
+    card.title = 'Show Plexo’s queue'
+  }
+
+  card.append(icon, text, ...(canOpen ? [go] : []), close, timer)
   root.append(style, card)
   document.documentElement.append(host)
 
@@ -182,7 +207,28 @@ function renderToast(message, showMs) {
     // Should the animation never run (a hidden tab), it still goes.
     setTimeout(() => host.remove(), 400)
   }
-  close.addEventListener('click', leave)
+  close.addEventListener('click', (event) => {
+    event.stopPropagation()
+    leave()
+  })
+  const open = (event) => {
+    if (!event.isTrusted || gone) return
+    try {
+      void chrome.runtime.sendMessage({ type: 'plexo:show-queue' }).catch(() => {})
+    } catch {
+      // The extension was reloaded since this card appeared: nothing to ask any more.
+    }
+    leave()
+  }
+  if (canOpen) {
+    card.addEventListener('click', open)
+    card.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        open(event)
+      }
+    })
+  }
   // The countdown bar pauses while the pointer is on the card, and so does the dismissal.
   timer.addEventListener('animationend', leave)
 }
