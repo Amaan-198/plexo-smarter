@@ -19,13 +19,11 @@ const EXTENSION = resolve(__dirname, '..', 'extension')
 declare const chrome: {
   storage: { local: { set: (items: Record<string, unknown>) => Promise<void> } }
   downloads: { search: (query: object) => Promise<{ url: string; state: string }[]> }
+  runtime: { getContexts: (filter: object) => Promise<{ documentUrl?: string }[]> }
 }
 
 function chromiumPath(): string | null {
-  const candidates = [
-    process.env.PLEXO_E2E_CHROMIUM,
-    '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'
-  ]
+  const candidates = [process.env.PLEXO_E2E_CHROMIUM]
   try {
     candidates.push(chromium.executablePath())
   } catch {
@@ -146,6 +144,23 @@ test('a download started in the browser is handed to Plexo with its session', as
     const page = await browser.context.newPage()
     await page.goto(site.page)
     await page.click('#download')
+    // The page says where the download went.
+    const card = page.getByRole('status').filter({ hasText: 'Sent to Plexo' })
+    await expect(card).toBeVisible()
+    // Clicking it shows the queue: the toolbar popup, or the same page in a small window.
+    await card.click()
+    // The toolbar popup opened (or, where a browser won't open it for an extension, the same
+    // page as a window).
+    await expect
+      .poll(() =>
+        browser.worker.evaluate(async () =>
+          (await chrome.runtime.getContexts({})).some((context) =>
+            context.documentUrl?.endsWith('/popup.html')
+          )
+        )
+      )
+      .toBe(true)
+    await expect(card).toBeHidden()
 
     const queue = await waitForQueue(plexo, (state) =>
       state.items.some((item) => item.status === 'completed')
@@ -174,6 +189,21 @@ test('a download started in the browser is handed to Plexo with its session', as
       expect(request.headers.referer).toBe(fromBrowser.headers.referer)
       expect(request.headers['user-agent']).toBe(fromBrowser.headers['user-agent'])
     }
+
+    // The toolbar popup shows the queue live: the finished file, and, once it's removed in
+    // Plexo, not any more.
+    const popup = await browser.context.newPage()
+    await popup.goto(`chrome-extension://${browser.extensionId}/popup.html`)
+    const row = popup.locator('#queue li')
+    await expect(row).toHaveCount(1)
+    await expect(row).toContainText('big.bin')
+    await expect(row).toContainText('Done')
+    // Its buttons show on hover; a finished file's only takes it off the list.
+    await row.hover()
+    await row.locator('button[data-kind="remove"]').click()
+    await expect(row).toHaveCount(0)
+    expect((await plexo.api.getQueue()).items).toEqual([])
+    await expect(popup.locator('#queue-empty')).toBeVisible()
 
     // And the browser's own copy is gone from its list.
     await expect
@@ -209,6 +239,9 @@ test('with Plexo out of reach, the browser downloads it itself', async ({ plexo,
     await page.goto(site.page)
     const download = page.waitForEvent('download')
     await page.click('#download')
+    await expect(page.getByRole('status').filter({ hasText: /Plexo isn.t running/ })).toContainText(
+      'Downloading in the browser instead'
+    )
     await (await download).path()
 
     await expect

@@ -90,15 +90,6 @@
         gap: 16px;
       }
 
-      .indent {
-        margin: 10px 0 0 26px;
-        transition: opacity 0.18s;
-      }
-
-      .indent[aria-disabled='true'] {
-        opacity: 0.45;
-      }
-
       .note {
         margin-top: 12px;
         padding: 10px 12px;
@@ -185,43 +176,30 @@
         <span id="capture-label" class="label">Which downloads go to Plexo</span>
         <div class="stack">
           <div>
-            <label class="option">
-              <input id="useAllowlist" type="checkbox" />
-              <div>
-                <strong>Downloads from these sites</strong>
-                <span
-                  >One per line. Covers the site’s subdomains, and downloads started from its
-                  pages.</span
-                >
-              </div>
+            <label for="allowlist">
+              <strong style="display: block; font-size: 13px; font-weight: 600">Sites</strong>
+              <span class="muted" style="font-size: 12px">
+                One per line. Covers each site’s subdomains, and downloads started from its pages.
+              </span>
             </label>
-            <div id="allowlist-box" class="indent">
-              <textarea id="allowlist" rows="4" spellcheck="false" aria-label="Sites"></textarea>
+            <textarea
+              id="allowlist"
+              rows="4"
+              spellcheck="false"
+              style="margin-top: 10px"
+            ></textarea>
+            <div class="row" style="margin-top: 10px">
+              <button id="save-sites" class="secondary" type="button" disabled>Save sites</button>
+              <span class="muted" style="font-size: 12px">
+                The browser asks to let the extension read each new site’s cookies.
+              </span>
             </div>
-          </div>
-          <div>
-            <label class="option">
-              <input id="useSizeThreshold" type="checkbox" />
-              <div>
-                <strong>Any download at least this big</strong>
-                <span>From any site — handy once you trust it with everything large.</span>
-              </div>
-            </label>
-            <div id="size-box" class="indent row">
-              <input
-                id="minSizeMB"
-                type="number"
-                min="1"
-                max="1000000"
-                step="1"
-                aria-label="Size in megabytes"
-              />
-              <span class="muted mono" style="font-size: 12px">MB</span>
-            </div>
+            <p id="sites-error" class="note error" role="alert" hidden></p>
           </div>
           <p class="muted" style="font-size: 12px">
             Anything else stays in the browser. You can always right-click a link and choose
-            <em>Download with Plexo</em>. Downloads in private windows are never sent.
+            <em>Download with Plexo</em> — from a site not on the list, without its cookies.
+            Downloads in private windows are never sent.
           </p>
         </div>
       </section>
@@ -233,6 +211,15 @@
           <div>
             <strong>Remove it from the browser’s download list</strong>
             <span>Otherwise it stays there, marked as cancelled.</span>
+          </div>
+        </label>
+        <label class="option" style="margin-top: 16px">
+          <input id="showConfirmation" type="checkbox" />
+          <div>
+            <strong>Show a confirmation on the page</strong>
+            <span
+              >A small card in the corner says it went to Plexo — or why the browser kept it.</span
+            >
           </div>
         </label>
         <p class="muted" style="margin-top: 14px; font-size: 12px">

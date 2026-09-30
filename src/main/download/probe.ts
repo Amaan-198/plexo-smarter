@@ -3,6 +3,7 @@ import { request as httpsRequest } from 'node:https'
 import { URL } from 'node:url'
 import type { ProbeResult, RequestContext } from '../../shared/types'
 import { testKnobs } from '../testKnobs'
+import { HttpStatusError } from './chunkDownloader'
 import { applySetCookie, requestHeaders } from './requestContext'
 
 const MAX_REDIRECTS = 5
@@ -179,7 +180,14 @@ export async function probeWithContext(
   }
 
   if (!response || response.statusCode === 0 || response.statusCode >= 400) {
-    throw new Error(`Server responded with status ${response?.statusCode || 'unknown'}`)
+    const status = response?.statusCode ?? 0
+    if (!response || status === 0) throw new Error('Server responded with status unknown')
+    throw new HttpStatusError(
+      status,
+      null,
+      /^text\/html\b/i.test(headerValue(response.headers, 'content-type') ?? ''),
+      `Server responded with status ${status}`
+    )
   }
 
   const contentRange = headerValue(response.headers, 'content-range')

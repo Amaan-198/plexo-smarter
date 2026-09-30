@@ -13,12 +13,14 @@ import {
   plexoFetch,
   saveSettings
 } from './shared.js'
+import { confirmOnPage } from './toast.js'
 
 const MENU_ID = 'plexo-download-link'
 /** How long to wait for the browser to settle a download's file name before sending without it
  * (Plexo then takes the server's name). */
 const FILENAME_WAIT_MS = 1500
-const RECENT_LIMIT = 5
+/** Settings earlier versions kept, and nothing reads any more. */
+const RETIRED_SETTINGS = ['recent', 'useAllowlist', 'useSizeThreshold', 'minSizeMB']
 
 /** Downloads being handed over right now, so a second event for one isn't acted on twice. */
 const handling = new Set()
@@ -29,25 +31,50 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
     chrome.contextMenus.create({ id: MENU_ID, title: 'Download with Plexo', contexts: ['link'] })
   })
   if (reason === 'install') chrome.runtime.openOptionsPage()
+  void chrome.storage.local.remove(RETIRED_SETTINGS)
 })
 
 chrome.downloads.onCreated.addListener((item) => {
   void takeOver(item).catch((error) => console.error('[plexo] hand-over failed', error))
 })
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId !== MENU_ID || !info.linkUrl) return
-  void sendLink(info.linkUrl, tab?.url ?? info.pageUrl, tab?.incognito === true)
+// The confirmation card, or its notification, was clicked: show the queue.
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (sender.id !== chrome.runtime.id || message?.type !== 'plexo:show-queue') return
+  void showQueue(sender.tab?.windowId)
+})
+chrome.notifications.onClicked.addListener((id) => {
+  void chrome.notifications.clear(id)
+  void showQueue()
 })
 
-/** Whether the user's rules say this download goes to Plexo. */
+/** Opens the toolbar popup — Plexo's queue, live. Where the browser won't open it on the
+ * extension's say-so, the same page opens as a small window instead. */
+async function showQueue(windowId) {
+  try {
+    await chrome.action.openPopup(windowId === undefined ? undefined : { windowId })
+  } catch {
+    await chrome.windows
+      .create({
+        url: chrome.runtime.getURL('popup.html'),
+        type: 'popup',
+        width: 340,
+        height: 460,
+        focused: true
+      })
+      .catch(() => {})
+  }
+}
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== MENU_ID || !info.linkUrl) return
+  void sendLink(info.linkUrl, tab?.url ?? info.pageUrl, tab?.incognito === true, tab?.id)
+})
+
+/** Whether it's from a site on the user's list: its link, or the page it was started from. */
 function wanted(item, settings) {
   const hosts = [item.finalUrl, item.url, item.referrer].map(hostOf)
-  if (settings.useAllowlist && hosts.some((host) => onAllowlist(host, settings.allowlist))) {
-    return true
-  }
-  const size = knownSize(item)
-  return settings.useSizeThreshold && size > 0 && size >= settings.minSizeMB * 1024 * 1024
+  return hosts.some((host) => onAllowlist(host, settings.allowlist))
 }
 
 function knownSize(item) {
@@ -76,23 +103,26 @@ async function takeOver(item) {
       () => false
     )
     const fileName = item.filename || (await settledFileName(item.id))
+    // The tab the user is on is where they clicked the download.
+    const tab = await activeTab()
     try {
-      await handOver(settings, {
+      const outcome = await handOver(settings, {
         url,
         fileName: baseName(fileName),
         referrer: item.referrer || undefined,
-        pageUrl: await sourcePage(item.referrer),
+        pageUrl: sourcePage(item.referrer, tab),
         totalBytes: knownSize(item) || undefined,
         cookies: await sessionFor([item.url, url])
       })
+      await chrome.downloads.cancel(item.id).catch(() => {})
+      if (settings.eraseHandedOver) await chrome.downloads.erase({ id: item.id }).catch(() => {})
+      if (settings.showConfirmation) await confirmOnPage(tab?.id, outcome)
     } catch (error) {
       // Plexo can't take it: the browser downloads it after all.
       if (paused) await chrome.downloads.resume(item.id).catch(() => {})
-      await notice(error)
-      return
+      const message = await notice(error)
+      if (settings.showConfirmation) await confirmOnPage(tab?.id, message)
     }
-    await chrome.downloads.cancel(item.id).catch(() => {})
-    if (settings.eraseHandedOver) await chrome.downloads.erase({ id: item.id }).catch(() => {})
   } finally {
     handling.delete(item.id)
   }
@@ -100,58 +130,93 @@ async function takeOver(item) {
 
 /** "Download with Plexo" on a link: the same hand-over, for a link that hasn't started
  * downloading. If Plexo can't take it, the browser downloads it instead. */
-async function sendLink(url, pageUrl, incognito) {
+async function sendLink(url, pageUrl, incognito, tabId) {
   if (!/^https?:/i.test(url)) return
   const settings = await loadSettings()
   try {
     if (!settings.token) throw new PlexoError('unauthorized', 'Not connected to Plexo')
-    await handOver(settings, {
+    const outcome = await handOver(settings, {
       url,
       referrer: pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : undefined,
       pageUrl: pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : undefined,
       // A private window's session isn't sent anywhere.
       cookies: incognito ? [] : await sessionFor([url])
     })
+    if (settings.showConfirmation) await confirmOnPage(tabId, outcome)
   } catch (error) {
-    await notice(error)
+    const message = await notice(error)
+    if (settings.showConfirmation) await confirmOnPage(tabId, message)
     await chrome.downloads.download({ url }).catch(() => {})
   }
 }
 
+/**
+ * Sends one link to Plexo's queue. Resolves to the confirmation to show; throws a PlexoError if
+ * Plexo didn't take it.
+ * @returns {Promise<import('./toast.js').ToastMessage>}
+ */
 async function handOver(settings, link) {
   const result = await plexoFetch('/v1/downloads', {
-    method: 'POST',
     port: settings.port,
     token: settings.token,
     body: { items: [{ ...link, userAgent: navigator.userAgent }] }
   })
   const name = link.fileName || baseName(new URL(link.url).pathname) || link.url
-  const recent = [
-    {
-      name,
-      at: Date.now(),
-      refreshed: result.refreshed > 0,
-      duplicate: result.added === 0 && result.refreshed === 0
-    },
-    ...settings.recent
-  ].slice(0, RECENT_LIMIT)
-  await saveSettings({ recent })
   await flashBadge('✓', '#1f8a70', `Sent to Plexo: ${name}`)
+  if (result.refreshed > 0) {
+    return {
+      tone: 'success',
+      title: 'New link sent to Plexo',
+      detail: name,
+      note: 'It picks up where it stopped.'
+    }
+  }
+  if (result.added === 0) {
+    return { tone: 'info', title: 'Already in Plexo’s queue', detail: name }
+  }
+  return { tone: 'success', title: 'Sent to Plexo', detail: name, note: 'Added to the queue.' }
 }
 
-/** What went wrong, where the user will see it: on the toolbar button. */
+/**
+ * What went wrong, on the toolbar button; resolves to the same for the page.
+ * @returns {Promise<import('./toast.js').ToastMessage>}
+ */
 async function notice(error) {
   if (error instanceof PlexoError && error.kind === 'unauthorized') {
     // Plexo forgot this browser (Disconnect in Plexo): it has to be connected again.
     await saveSettings({ token: null })
     await flashBadge('!', '#d97706', 'Plexo: connect this browser again (click for details)', 0)
-    return
+    return {
+      tone: 'warn',
+      title: 'Plexo needs you to connect again',
+      note: 'Downloading in the browser instead. Click the Plexo button to reconnect.'
+    }
   }
-  const message =
-    error instanceof PlexoError && error.kind === 'offline'
-      ? 'Plexo isn’t running, so the browser downloaded it.'
-      : `Plexo couldn’t take it (${error.message}), so the browser downloaded it.`
-  await flashBadge('!', '#dc2626', message)
+  if (error instanceof PlexoError && error.kind === 'offline') {
+    await flashBadge('!', '#dc2626', 'Plexo isn’t running, so the browser downloaded it.')
+    return {
+      tone: 'warn',
+      title: 'Plexo isn’t running',
+      note: 'Downloading in the browser instead.'
+    }
+  }
+  await flashBadge('!', '#dc2626', `Plexo couldn’t take it (${error.message}).`)
+  return {
+    tone: 'error',
+    title: 'Plexo couldn’t take this download',
+    detail: error.message,
+    note: 'Downloading in the browser instead.'
+  }
+}
+
+/** The tab in front of the user, if any. */
+async function activeTab() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+    return tab
+  } catch {
+    return undefined
+  }
 }
 
 async function flashBadge(text, color, title, forMs = 4000) {
@@ -214,10 +279,9 @@ async function sessionFor(urls) {
  * no use for getting a fresh link later. The tab the user is on is the page, if it's on that
  * same site.
  */
-async function sourcePage(referrer) {
+function sourcePage(referrer, tab) {
   if (!referrer) return undefined
   try {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
     if (
       tab?.url &&
       /^https?:/i.test(tab.url) &&
@@ -226,7 +290,7 @@ async function sourcePage(referrer) {
       return tab.url
     }
   } catch {
-    // No tab to go by.
+    // A referrer that isn't a URL: nothing better to go by.
   }
   return referrer
 }

@@ -148,3 +148,62 @@ export function isSafeCookieText(text: string): boolean {
   // eslint-disable-next-line no-control-regex
   return !/[;\u0000-\u001f\u007f]/.test(text)
 }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** An http(s) URL, normalized, or undefined for anything else. */
+export function httpUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 8192) return undefined
+  try {
+    const url = new URL(value.trim())
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function sanitizeCookie(value: unknown): BrowserCookie | null {
+  if (!isRecord(value)) return null
+  const { name, value: text, domain, path, secure, hostOnly, expirationDate } = value
+  if (typeof name !== 'string' || !name || name.length > 4096 || !isSafeCookieText(name)) {
+    return null
+  }
+  if (typeof text !== 'string' || text.length > 8192 || !isSafeCookieText(text)) return null
+  if (typeof domain !== 'string' || !domain || domain.length > 255) return null
+  const cookie: BrowserCookie = {
+    name,
+    value: text,
+    domain,
+    path: typeof path === 'string' && path.startsWith('/') ? path : '/',
+    secure: secure === true,
+    hostOnly: hostOnly === true
+  }
+  if (typeof expirationDate === 'number' && Number.isFinite(expirationDate)) {
+    cookie.expirationDate = expirationDate
+  }
+  return cookie
+}
+
+/** A request context from outside — the browser extension, or a file on disk — checked field by
+ * field. Anything that could smuggle a header is dropped. */
+export function sanitizeContext(value: unknown): RequestContext | undefined {
+  if (!isRecord(value)) return undefined
+  const context: RequestContext = {}
+  const referrer = httpUrl(value.referrer)
+  if (referrer) context.referrer = referrer
+  const userAgent = typeof value.userAgent === 'string' ? value.userAgent : ''
+  // eslint-disable-next-line no-control-regex
+  if (userAgent && userAgent.length <= 512 && !/[\u0000-\u001f\u007f]/.test(userAgent)) {
+    context.userAgent = userAgent
+  }
+  if (Array.isArray(value.cookies)) {
+    const cookies = value.cookies
+      .slice(0, 300)
+      .map(sanitizeCookie)
+      .filter((cookie): cookie is BrowserCookie => cookie !== null)
+    if (cookies.length > 0) context.cookies = cookies
+  }
+  return Object.keys(context).length > 0 ? context : undefined
+}

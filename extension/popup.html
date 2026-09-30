@@ -74,31 +74,177 @@
         color: var(--text-secondary);
       }
 
-      .recent {
+      .queue-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+
+      .queue-head .summary {
+        font: 10.5px/1 var(--mono);
+        color: var(--text-tertiary);
+      }
+
+      .queue {
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 9px;
         margin: 0;
         padding: 0;
         list-style: none;
       }
 
-      .recent li {
+      .queue li {
         display: flex;
-        align-items: baseline;
-        gap: 8px;
-        font: 11px/1.4 var(--mono);
-        color: var(--text-secondary);
+        flex-direction: column;
+        gap: 5px;
         animation: rise 0.22s ease-out;
       }
 
-      .recent .name {
+      .queue .line {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        font: 11px/1.4 var(--mono);
+      }
+
+      /* A long name loses its middle, never its end: "…part03.rar" is what tells files apart. */
+      .queue .name {
         flex: 1;
+        min-width: 0;
+        display: flex;
+        color: var(--text);
+      }
+
+      .queue .name .head {
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+
+      .queue .name .tail {
+        flex: none;
+        white-space: pre;
+      }
+
+      .queue .line {
+        position: relative;
+      }
+
+      .queue .state {
+        flex: none;
+        color: var(--text-secondary);
+        font-variant-numeric: tabular-nums;
+        transition:
+          color 0.2s,
+          opacity 0.15s;
+      }
+
+      /* On hover (or keyboard focus) a row's buttons take the place of its status, over a fade
+         so a long name runs out beneath them rather than colliding. */
+      .queue .actions {
+        position: absolute;
+        top: 50%;
+        right: 0;
+        display: flex;
+        gap: 2px;
+        padding-left: 22px;
+        background: linear-gradient(to right, transparent, var(--bg) 18px);
+        transform: translateY(-50%);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s;
+      }
+
+      .queue li:hover .actions,
+      .queue li:focus-within .actions {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .queue li:hover .state,
+      .queue li:focus-within .state {
+        opacity: 0;
+      }
+
+      .queue .act {
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text-secondary);
+        font: 600 10.5px/1 var(--mono);
+      }
+
+      .queue .act svg {
+        width: 13px;
+        height: 13px;
+      }
+
+      .queue .act:hover:not(:disabled) {
+        background: var(--track);
         color: var(--text);
+      }
+
+      .queue .act[data-kind='remove']:hover:not(:disabled) {
+        color: var(--danger);
+      }
+
+      .queue .act.confirming {
+        width: auto;
+        padding: 0 8px;
+        background: var(--danger-bg);
+        color: var(--danger);
+        animation: rise 0.15s ease-out;
+      }
+
+      .queue li[data-tone='done'] .name {
+        color: var(--text-secondary);
+      }
+
+      .queue li[data-tone='done'] .state {
+        color: var(--success);
+      }
+
+      .queue li[data-tone='warn'] .state {
+        color: var(--warn-text);
+      }
+
+      .queue li[data-tone='error'] .state {
+        color: var(--danger);
+      }
+
+      .queue .bar {
+        height: 3px;
+        border-radius: 999px;
+        background: var(--track);
+        overflow: hidden;
+      }
+
+      .queue .bar > div {
+        height: 100%;
+        border-radius: inherit;
+        background: var(--accent);
+        transition:
+          width 0.5s ease-out,
+          background-color 0.2s;
+      }
+
+      .queue li[data-paused='true'] .bar > div {
+        background: var(--neutral);
+      }
+
+      .queue-more,
+      .queue-empty {
+        font: 11px/1.4 var(--mono);
+        color: var(--text-tertiary);
+      }
+
+      .queue-more {
+        margin-top: 8px;
       }
 
       footer {
@@ -147,10 +293,15 @@
         </div>
       </div>
 
-      <div id="recent-block" hidden>
-        <div class="label" style="margin-bottom: 8px">Sent to Plexo</div>
-        <ul id="recent" class="recent"></ul>
-      </div>
+      <section id="queue-block" aria-labelledby="queue-label" hidden>
+        <div class="queue-head">
+          <span id="queue-label" class="label">Plexo queue</span>
+          <span id="queue-summary" class="summary"></span>
+        </div>
+        <ul id="queue" class="queue"></ul>
+        <div id="queue-empty" class="queue-empty" hidden>Nothing in the queue.</div>
+        <div id="queue-more" class="queue-more" hidden></div>
+      </section>
     </main>
     <footer>
       <button id="settings" class="link" type="button">Settings…</button>

@@ -1,37 +1,28 @@
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { app, Notification, shell, type BrowserWindow } from 'electron'
 import { IpcChannels } from '../../shared/ipc-channels'
 import type {
   AddLinksResult,
+  AppSettings,
   BrowserBridgeState,
-  BrowserCookie,
   DownloadState,
   DownloadStatus,
   QueueItem,
   QueueItemProblem,
   QueueLink,
-  QueueState,
-  RequestContext
+  QueueState
 } from '../../shared/types'
+import { nameOf } from '../../shared/queueItemName'
 import type { DownloadEvent, DownloadManager } from '../download/downloadManager'
 import { probeWithContext } from '../download/probe'
-import { isSafeCookieText } from '../download/requestContext'
 import { readJson, updateJson } from '../jsonFile'
 import type { NetworkMonitor } from '../network/interfaces'
+import { seal } from '../secrets'
 import { testKnobs } from '../testKnobs'
-
-/** A queue item as saved: what the window sees, plus the browser session it was captured with,
- * which never leaves the main process. */
-interface StoredItem extends QueueItem {
-  context?: RequestContext
-}
-
-interface QueueFile {
-  version: 1
-  destinationDir?: string
-  items: StoredItem[]
-}
+import { classifyDownload, classifyError, LinkExpiredError, type Failure } from './failures'
+import { hostOf, sameName, sanitizeLink, sanitizeStoredItem, type StoredItem } from './items'
 
 /** Downloads started for an item before a failure that isn't the link's fault (a server
  * error, a dropped connection) stops being retried on its own. */
@@ -39,146 +30,21 @@ const MAX_AUTO_ATTEMPTS = 2
 /** Pasted links are looked up (size, name) in the background, this many at a time. */
 const LOOKUP_CONCURRENCY = 2
 const MAX_ITEMS = 5000
+/** queue.json may be briefly locked (antivirus, a sync client): read again this many times. */
+const READ_TRIES = 5
 
-/** A link that stopped leading to the file: nothing but a fresh one will help. */
-class LinkExpiredError extends Error {}
-
-const EXPIRED_MESSAGE =
-  'Link expired or no longer leads to the file. A fresh link from its page picks up where it stopped.'
-
-/** Why a download or its probe failed, in the queue's terms. The messages are the download
- * manager's and probe's own (HttpStatusError, probeUrl): a 401/403/404/410 is a link that stopped
- * working — a file host's session link that ran out — and so is a 200 to a range request, which
- * is a server sending a page (an error, a captcha) where the file's bytes used to be. */
-export function classifyFailure(error: unknown): { problem: QueueItemProblem; error: string } {
-  if (error instanceof LinkExpiredError) return { problem: 'expired', error: error.message }
-  const message = error instanceof Error ? error.message : String(error)
-  if (/\bstatus (?:200|401|403|404|410)\b/.test(message)) {
-    return { problem: 'expired', error: EXPIRED_MESSAGE }
-  }
-  return { problem: 'other', error: message }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function httpUrl(value: unknown): string | undefined {
-  if (typeof value !== 'string' || value.length > 8192) return undefined
-  try {
-    const url = new URL(value.trim())
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : undefined
-  } catch {
-    return undefined
-  }
-}
-
-const optionalString = (value: unknown, max: number): string | undefined =>
-  typeof value === 'string' && value.length > 0 && value.length <= max ? value : undefined
-
-const optionalCount = (value: unknown): number | undefined =>
-  Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined
-
-function sanitizeCookie(value: unknown): BrowserCookie | null {
-  if (!isRecord(value)) return null
-  const { name, value: text, domain, path, secure, hostOnly, expirationDate } = value
-  if (typeof name !== 'string' || !name || name.length > 4096 || !isSafeCookieText(name)) {
-    return null
-  }
-  if (typeof text !== 'string' || text.length > 8192 || !isSafeCookieText(text)) return null
-  if (typeof domain !== 'string' || !domain || domain.length > 255) return null
-  const cookie: BrowserCookie = {
-    name,
-    value: text,
-    domain,
-    path: typeof path === 'string' && path.startsWith('/') ? path : '/',
-    secure: secure === true,
-    hostOnly: hostOnly === true
-  }
-  if (typeof expirationDate === 'number' && Number.isFinite(expirationDate)) {
-    cookie.expirationDate = expirationDate
-  }
-  return cookie
-}
-
-/** A request context from outside — the browser extension, or a file on disk — checked field by
- * field. Anything that could smuggle a header is dropped. */
-export function sanitizeContext(value: unknown): RequestContext | undefined {
-  if (!isRecord(value)) return undefined
-  const context: RequestContext = {}
-  const referrer = httpUrl(value.referrer)
-  if (referrer) context.referrer = referrer
-  const userAgent = optionalString(value.userAgent, 512)
-  // eslint-disable-next-line no-control-regex
-  if (userAgent && !/[\u0000-\u001f\u007f]/.test(userAgent)) context.userAgent = userAgent
-  if (Array.isArray(value.cookies)) {
-    const cookies = value.cookies
-      .slice(0, 300)
-      .map(sanitizeCookie)
-      .filter((cookie): cookie is BrowserCookie => cookie !== null)
-    if (cookies.length > 0) context.cookies = cookies
-  }
-  return Object.keys(context).length > 0 ? context : undefined
-}
-
-/** A link from outside (pasted, or sent by the extension), or undefined if it isn't one. */
-export function sanitizeLink(value: unknown): QueueLink | undefined {
-  if (!isRecord(value)) return undefined
-  const url = httpUrl(value.url)
-  if (!url) return undefined
-  const fileName = optionalString(value.fileName, 255)?.trim()
-  return {
-    url,
-    fileName: fileName || undefined,
-    pageUrl: httpUrl(value.pageUrl),
-    context: sanitizeContext(value.context),
-    totalBytes: optionalCount(value.totalBytes)
-  }
-}
-
-const STATUSES = new Set(['queued', 'starting', 'active', 'completed', 'failed'])
-const PROBLEMS = new Set(['expired', 'cancelled', 'other'])
-
-function sanitizeStoredItem(value: unknown): StoredItem | null {
-  if (!isRecord(value) || typeof value.id !== 'string') return null
-  const link = sanitizeLink({ ...value, context: value.context })
-  if (!link) return null
-  const status = STATUSES.has(value.status as string)
-    ? (value.status as StoredItem['status'])
-    : 'queued'
-  const now = Date.now()
-  return {
-    id: value.id,
-    url: link.url,
-    fileName: link.fileName,
-    source: value.source === 'browser' ? 'browser' : 'paste',
-    pageUrl: httpUrl(value.pageUrl),
-    hasSession: !!link.context?.cookies?.length,
-    addedAt: optionalCount(value.addedAt) ?? now,
-    linkAt: optionalCount(value.linkAt) ?? now,
-    status,
-    totalBytes: optionalCount(value.totalBytes),
-    bytesDownloaded: optionalCount(value.bytesDownloaded),
-    downloadId: optionalString(value.downloadId, 64),
-    destinationPath: optionalString(value.destinationPath, 4096),
-    error: optionalString(value.error, 2000),
-    problem: PROBLEMS.has(value.problem as string)
-      ? (value.problem as QueueItemProblem)
-      : undefined,
-    attempts: optionalCount(value.attempts) ?? 0,
-    context: link.context
-  }
-}
-
-const sameName = (a: string | undefined, b: string | undefined): boolean =>
-  !!a && !!b && a.toLowerCase() === b.toLowerCase()
-
-const hostOf = (url: string | undefined): string | null => {
-  try {
-    return url ? new URL(url).hostname : null
-  } catch {
-    return null
-  }
+/** One queue item as the browser extension's popup shows it (see browserView). */
+export interface BrowserQueueItem {
+  id: string
+  name: string
+  status: QueueItem['status']
+  problem?: QueueItemProblem
+  totalBytes: number
+  bytesDownloaded: number
+  speedBytesPerSec: number
+  paused: boolean
+  addedAt: number
+  finishedAt?: number
 }
 
 /**
@@ -196,6 +62,9 @@ export class DownloadQueue {
   /** The current download failed outside the queue: the user moves on from it before the queue
    * does, rather than having it swept away. */
   private blocked = false
+  /** queue.json couldn't be read: nothing is saved over it this session, lest what it holds be
+   * lost to a moment's lock. */
+  private loadError: string | undefined
   private manager: DownloadManager | null = null
   readonly loaded: Promise<void>
   /** Everything that talks to the download manager runs one step at a time, in order. */
@@ -203,15 +72,20 @@ export class DownloadQueue {
   private pumpQueued = false
   private emitQueued = false
   private saveQueued = false
-  private lookupsRunning = 0
+  /** The last save, for flush to wait on. */
+  private saving: Promise<void> = Promise.resolve()
+  private lookingUp = new Set<string>()
+  /** Each download's status as last seen: what tells a change of status from progress. */
+  private seenStatus = new Map<string, DownloadStatus>()
   private bridge: BrowserBridgeState = { status: 'starting', port: 0, pairedCount: 0 }
   /** Tallied since the queue last had nothing to do, for the "queue finished" notification. */
-  private session = { completed: 0, failed: 0 }
+  private session = { completed: 0, failed: 0, lastName: '' }
 
   constructor(
     private getWindow: () => BrowserWindow | null,
     private networks: NetworkMonitor,
-    private defaultDestination: () => Promise<string>
+    /** The app's settings: where downloads go by default, and which networks are switched off. */
+    private settings: () => Promise<AppSettings & { downloadsDir: string }>
   ) {
     this.loaded = this.load()
   }
@@ -222,17 +96,28 @@ export class DownloadQueue {
 
   private async load(): Promise<void> {
     let file: unknown
-    try {
-      file = await readJson(this.filePath())
-    } catch (error) {
-      console.error('[plexo] failed to read queue.json', error)
+    for (let attempt = 1; ; attempt++) {
+      try {
+        file = await readJson(this.filePath())
+        break
+      } catch (error) {
+        if (attempt < READ_TRIES) {
+          await sleep(100 * attempt)
+          continue
+        }
+        console.error('[plexo] failed to read queue.json', error)
+        this.loadError =
+          'Plexo couldn’t read its saved queue, so changes this session won’t be saved. Restart Plexo to try again.'
+        break
+      }
     }
-    const saved = isRecord(file) ? file : {}
+    const saved = typeof file === 'object' && file !== null ? (file as Record<string, unknown>) : {}
     const destination = saved.destinationDir
+    const settings = await this.settings().catch(() => null)
     this.destinationDir =
       typeof destination === 'string' && isAbsolute(destination)
         ? destination
-        : await this.defaultDestination().catch(() => '')
+        : (settings?.destinationDir ?? settings?.downloadsDir ?? '')
     const items = Array.isArray(saved.items) ? saved.items : []
     const ids = new Set<string>()
     for (const value of items.slice(0, MAX_ITEMS)) {
@@ -245,34 +130,38 @@ export class DownloadQueue {
     }
   }
 
-  /** The downloads the queue still wants kept, should they be parked (see DownloadManager). */
-  async retainedDownloads(): Promise<ReadonlySet<string>> {
+  /** What the queue still wants of the downloads it parked (see DownloadManager): each by its
+   * download or item id — or all of them, when the queue couldn't be read to say. */
+  async retainedDownloads(): Promise<ReadonlySet<string> | 'all'> {
     await this.loaded
-    return new Set(
-      this.items
-        .filter((item) => item.status !== 'completed' && item.downloadId)
-        .map((item) => item.downloadId!)
-    )
+    if (this.loadError) return 'all'
+    const retained = new Set<string>()
+    for (const item of this.items) {
+      if (item.status === 'completed') continue
+      retained.add(item.id)
+      if (item.downloadId) retained.add(item.downloadId)
+    }
+    return retained
   }
 
   /** Connects the queue to the download manager, once both have loaded, and squares what the
-   * queue remembers with what the manager restored. */
+   * queue remembers with what the manager restored — including a download it started just
+   * before the app quit, faster than it could note which. */
   async attach(manager: DownloadManager): Promise<void> {
     await this.loaded
     this.manager = manager
     manager.subscribe((event) => this.onDownloadEvent(event))
     await this.enqueue(async () => {
       for (const item of this.items) {
-        if (!item.downloadId) {
-          if (item.status === 'active') item.status = 'queued'
-          continue
-        }
-        const state = await manager.stateOf(item.downloadId)
+        if (item.status === 'completed') continue
+        item.downloadId ??= await manager.downloadForQueueItem(item.id)
+        const state = item.downloadId ? await manager.stateOf(item.downloadId) : undefined
         if (!state) {
           item.downloadId = undefined
           if (item.status === 'active') item.status = 'queued'
           continue
         }
+        if (item.status === 'queued' && state.status !== 'error') item.status = 'active'
         if (item.status === 'active') this.applyState(item, state)
       }
     })
@@ -287,12 +176,38 @@ export class DownloadQueue {
       running: this.running,
       destinationDir: this.destinationDir,
       blocked: this.blocked,
+      loadError: this.loadError,
       items: this.items.map((item) => {
         const view: StoredItem = { ...item }
         delete view.context
         return view
       }),
       bridge: this.bridge
+    }
+  }
+
+  /** The queue as the browser extension shows it: what each item is called and where it's at,
+   * live. Nothing else — no links, paths or sessions — leaves for the browser. */
+  async browserView(): Promise<{ running: boolean; items: BrowserQueueItem[] }> {
+    await this.loaded
+    const current = await this.manager?.currentState()
+    return {
+      running: this.running,
+      items: this.items.map((item) => {
+        const live = item.status === 'active' && current?.id === item.downloadId ? current : null
+        return {
+          id: item.id,
+          name: nameOf(item),
+          status: item.status,
+          problem: item.problem,
+          totalBytes: live?.totalBytes || item.totalBytes || 0,
+          bytesDownloaded: live?.bytesDownloaded ?? item.bytesDownloaded ?? 0,
+          speedBytesPerSec: live?.status === 'downloading' ? live.speedBytesPerSec : 0,
+          paused: live?.status === 'paused',
+          addedAt: item.addedAt,
+          finishedAt: item.finishedAt
+        }
+      })
     }
   }
 
@@ -314,19 +229,31 @@ export class DownloadQueue {
   }
 
   private scheduleSave(): void {
-    if (this.saveQueued) return
+    if (this.saveQueued || this.loadError) return
     this.saveQueued = true
     setImmediate(() => {
-      this.saveQueued = false
-      const file: QueueFile = {
-        version: 1,
-        destinationDir: this.destinationDir || undefined,
-        items: this.items
-      }
-      updateJson(this.filePath(), () => file).catch((error) =>
-        console.error('[plexo] failed to save queue.json', error)
-      )
+      if (this.saveQueued) void this.save()
     })
+  }
+
+  private save(): Promise<void> {
+    this.saveQueued = false
+    const file = {
+      version: 1,
+      destinationDir: this.destinationDir || undefined,
+      // Each item's browser session is sealed (see secrets.ts), as the browser keeps its own.
+      items: this.items.map((item) => ({ ...item, context: seal(item.context) }))
+    }
+    this.saving = updateJson(this.filePath(), () => file).catch((error) =>
+      console.error('[plexo] failed to save queue.json', error)
+    )
+    return this.saving
+  }
+
+  /** Saves now what's waiting to be saved, and waits for it: for the app quitting. */
+  async flush(): Promise<void> {
+    if (this.saveQueued) await this.save()
+    else await this.saving
   }
 
   /** Something the window shows, or the next launch needs, changed. */
@@ -355,38 +282,37 @@ export class DownloadQueue {
       if (!link) continue
       const pageUrl = link.pageUrl ?? link.context?.referrer
       const pageHost = hostOf(pageUrl)
+      const linkName = nameOf(link)
       // The same file from the same page (or, for one that expired, the same site): same name,
-      // and a page known on both sides — a name alone could be anyone's "video.mp4".
-      const refreshable =
-        options.source === 'browser' && pageUrl
-          ? this.items.find(
-              (item) =>
-                (item.status === 'failed' || item.status === 'queued') &&
-                item.url !== link.url &&
-                sameName(item.fileName, link.fileName) &&
-                (item.pageUrl === pageUrl ||
-                  (item.problem === 'expired' &&
-                    pageHost !== null &&
-                    hostOf(item.pageUrl) === pageHost))
-            )
-          : undefined
-      if (refreshable) {
-        refreshable.url = link.url
-        refreshable.context = link.context
-        refreshable.hasSession = !!link.context?.cookies?.length
-        refreshable.pageUrl = pageUrl ?? refreshable.pageUrl
-        refreshable.linkAt = now
-        refreshable.totalBytes ||= link.totalBytes
-        if (refreshable.status === 'failed') this.requeue(refreshable)
-        result.refreshed++
+      // and a page known on both sides — a name alone could be anyone's "video.mp4". Every
+      // click on a file host's download button makes a new link, so the link itself can't say.
+      const sameFile = (item: StoredItem): boolean =>
+        options.source === 'browser' &&
+        !!pageUrl &&
+        sameName(nameOf(item), linkName) &&
+        (item.pageUrl === pageUrl ||
+          (item.problem === 'expired' && pageHost !== null && hostOf(item.pageUrl) === pageHost))
+
+      const waiting = (item: StoredItem): boolean =>
+        item.status === 'queued' || item.status === 'starting' || item.status === 'active'
+      // It's in the queue already, under this link or as this file.
+      if (this.items.some((item) => waiting(item) && (item.url === link.url || sameFile(item)))) {
+        const refreshable = this.items.find(
+          (item) => item.status === 'queued' && item.url !== link.url && sameFile(item)
+        )
+        if (refreshable) {
+          this.refresh(refreshable, link, pageUrl, now)
+          result.refreshed++
+        } else {
+          result.duplicates++
+        }
         continue
       }
-      if (
-        this.items.some(
-          (item) => item.url === link.url && item.status !== 'completed' && item.status !== 'failed'
-        )
-      ) {
-        result.duplicates++
+      const expired = this.items.find((item) => item.status === 'failed' && sameFile(item))
+      if (expired) {
+        this.refresh(expired, link, pageUrl, now)
+        this.requeue(expired)
+        result.refreshed++
         continue
       }
       if (this.items.length >= MAX_ITEMS) break
@@ -415,10 +341,33 @@ export class DownloadQueue {
     return result
   }
 
+  /** Gives an item a fresher link to the same file. */
+  private refresh(
+    item: StoredItem,
+    link: QueueLink,
+    pageUrl: string | undefined,
+    now: number
+  ): void {
+    item.url = link.url
+    item.context = link.context
+    item.hasSession = !!link.context?.cookies?.length
+    item.pageUrl = pageUrl ?? item.pageUrl
+    item.linkAt = now
+    item.totalBytes ||= link.totalBytes
+  }
+
   private requeue(item: StoredItem): void {
     item.status = 'queued'
     item.error = undefined
     item.problem = undefined
+    item.finishedAt = undefined
+  }
+
+  private finish(item: StoredItem, status: 'completed' | 'failed', failure?: Failure): void {
+    item.status = status
+    item.finishedAt = Date.now()
+    item.error = failure?.error
+    item.problem = failure?.problem
   }
 
   /**
@@ -428,7 +377,7 @@ export class DownloadQueue {
    * link is best left untouched until its turn.
    */
   private startLookups(): void {
-    while (this.lookupsRunning < LOOKUP_CONCURRENCY) {
+    while (this.lookingUp.size < LOOKUP_CONCURRENCY) {
       const item = this.items.find(
         (candidate) =>
           candidate.status === 'queued' &&
@@ -438,16 +387,13 @@ export class DownloadQueue {
           !this.lookingUp.has(candidate.id)
       )
       if (!item) return
-      this.lookupsRunning++
       this.lookingUp.add(item.id)
       void this.lookUp(item).finally(() => {
-        this.lookupsRunning--
+        this.lookingUp.delete(item.id)
         this.startLookups()
       })
     }
   }
-
-  private lookingUp = new Set<string>()
 
   private async lookUp(item: StoredItem): Promise<void> {
     const url = item.url
@@ -456,23 +402,27 @@ export class DownloadQueue {
       if (item.url !== url || item.status !== 'queued') return
       item.totalBytes = probe.totalBytes ?? 0
       item.fileName ||= probe.suggestedFileName
-      this.changed()
     } catch (error) {
       if (item.url !== url || item.status !== 'queued') return
-      const failure = classifyFailure(error)
+      const failure = classifyError(error)
       // Only a link that plainly doesn't work fails now; anything else gets its turn.
-      if (failure.problem === 'expired') {
-        item.status = 'failed'
-        item.error = failure.error
-        item.problem = failure.problem
-      } else {
-        item.totalBytes = 0
-      }
-      this.changed()
+      if (failure.problem === 'expired') this.finish(item, 'failed', failure)
+      else item.totalBytes = 0
     }
+    this.changed()
   }
 
-  // --- commands from the window ---------------------------------------------------------------
+  // --- commands from the window and the browser -----------------------------------------------
+
+  private find(id: string): StoredItem | undefined {
+    return this.items.find((item) => item.id === id)
+  }
+
+  /** The item's download, if it's the one the queue is on. */
+  private activeDownload(id: string): string | undefined {
+    const item = this.find(id)
+    return item?.status === 'active' ? item.downloadId : undefined
+  }
 
   async start(): Promise<void> {
     await this.loaded
@@ -500,28 +450,51 @@ export class DownloadQueue {
     })
   }
 
-  async retry(id: string): Promise<void> {
+  /** Pauses an item's download, if it's the one running. The queue waits on it, paused, as it
+   * would on a download paused in the window. */
+  async pauseItem(id: string): Promise<void> {
     await this.loaded
-    const item = this.items.find((entry) => entry.id === id)
-    if (!item || item.status !== 'failed') return
-    this.requeue(item)
-    // A retry is asked for, not automatic: it gets its own full set of attempts.
-    item.attempts = 0
+    const downloadId = this.activeDownload(id)
+    if (!downloadId) return
+    await this.enqueue(async () => {
+      if ((await this.manager?.stateOf(downloadId))?.status === 'downloading') {
+        await this.manager?.pause(downloadId)
+      }
+    })
+  }
+
+  /** Resumes an item's paused download, and the queue with it. */
+  async resumeItem(id: string): Promise<void> {
+    await this.loaded
+    const downloadId = this.activeDownload(id)
+    if (!downloadId) return
     this.running = true
     this.changed()
-    this.pump()
+    await this.enqueue(async () => {
+      if ((await this.manager?.stateOf(downloadId))?.status === 'paused') {
+        this.manager?.resume(downloadId)
+      }
+    })
+  }
+
+  async retry(id: string): Promise<void> {
+    await this.retryWhere((item) => item.id === id)
   }
 
   async retryFailed(): Promise<void> {
+    await this.retryWhere(() => true)
+  }
+
+  /** Sends failed items back to wait their turn. A retry is asked for, not automatic: each gets
+   * its own full set of attempts. */
+  private async retryWhere(which: (item: StoredItem) => boolean): Promise<void> {
     await this.loaded
-    let any = false
-    for (const item of this.items) {
-      if (item.status !== 'failed') continue
+    const failed = this.items.filter((item) => item.status === 'failed' && which(item))
+    if (failed.length === 0) return
+    for (const item of failed) {
       this.requeue(item)
       item.attempts = 0
-      any = true
     }
-    if (!any) return
     this.running = true
     this.changed()
     this.pump()
@@ -529,7 +502,7 @@ export class DownloadQueue {
 
   async remove(id: string): Promise<void> {
     await this.loaded
-    const item = this.items.find((entry) => entry.id === id)
+    const item = this.find(id)
     if (!item) return
     this.items = this.items.filter((entry) => entry !== item)
     this.changed()
@@ -544,7 +517,8 @@ export class DownloadQueue {
   }
 
   /** Moves a waiting item one place up or down the line of waiting items. */
-  move(id: string, offset: -1 | 1): void {
+  async move(id: string, offset: -1 | 1): Promise<void> {
+    await this.loaded
     const index = this.items.findIndex((entry) => entry.id === id)
     if (index < 0 || this.items[index].status !== 'queued') return
     let target = index + offset
@@ -574,12 +548,14 @@ export class DownloadQueue {
   }
 
   openPage(id: string): void {
-    const page = this.items.find((entry) => entry.id === id)?.pageUrl
+    const page = this.find(id)?.pageUrl
     if (page && /^https?:/i.test(page)) void shell.openExternal(page)
   }
 
-  setDestination(dir: string): void {
+  async setDestination(dir: string): Promise<void> {
     if (typeof dir !== 'string' || !isAbsolute(dir)) return
+    // Set before the saved queue has loaded, it would be overwritten by the saved folder.
+    await this.loaded
     this.destinationDir = dir
     this.changed()
   }
@@ -590,27 +566,20 @@ export class DownloadQueue {
     return this.items.find((item) => item.downloadId === downloadId)
   }
 
-  /** Each download's status as last seen: what tells a change of status from progress. */
-  private seenStatus = new Map<string, DownloadStatus>()
-
   private onDownloadEvent(event: DownloadEvent): void {
     if (event.type === 'removed') {
       this.seenStatus.delete(event.id)
       const item = this.itemFor(event.id)
-      if (!item) {
-        // The user moved on from a download of their own: the queue can go on.
-        this.pump()
-        return
+      if (item) {
+        item.downloadId = undefined
+        // Removed while it was the current download (New Download on its screen): it is done
+        // with, as far as the user is concerned.
+        if (item.status === 'active') {
+          this.finish(item, 'failed', { problem: 'cancelled', error: 'Removed' })
+        }
+        this.changed()
       }
-      item.downloadId = undefined
-      // Removed while it was the current download (New Download on its screen): it is done
-      // with, as far as the user is concerned.
-      if (item.status === 'active') {
-        item.status = 'failed'
-        item.problem = 'cancelled'
-        item.error = 'Removed'
-      }
-      this.changed()
+      // Either way, the way may be free now.
       this.pump()
       return
     }
@@ -641,19 +610,18 @@ export class DownloadQueue {
         return
       case 'completed':
         if (item.status === 'completed') return
-        item.status = 'completed'
+        this.finish(item, 'completed')
+        item.finishedAt = state.completedAt ?? item.finishedAt
         item.destinationPath = state.destinationPath
         item.fileName = state.fileName
-        item.error = undefined
-        item.problem = undefined
         this.session.completed++
+        this.session.lastName = state.fileName
         this.changed()
         this.pump()
         return
       case 'error': {
         if (item.status !== 'active') return
-        const failure = classifyFailure(state.error ?? 'The download failed')
-        this.fail(item, failure)
+        this.fail(item, classifyDownload(state.refusal, state.error ?? 'The download failed'))
         const downloadId = state.id
         // Kept, with what it downloaded, for a retry to pick up — but out of the way of the next.
         void this.enqueue(async () => {
@@ -674,15 +642,14 @@ export class DownloadQueue {
 
   /** Marks an item failed — or, for a failure that isn't the link's fault and hasn't used up
    * its attempts, sends it to the back of the queue for another go. */
-  private fail(item: StoredItem, failure: { problem: QueueItemProblem; error: string }): void {
+  private fail(item: StoredItem, failure: Failure): void {
     if (failure.problem === 'other' && item.attempts < MAX_AUTO_ATTEMPTS) {
       this.requeue(item)
       this.items = [...this.items.filter((entry) => entry !== item), item]
     } else {
-      item.status = 'failed'
-      item.error = failure.error
-      item.problem = failure.problem
+      this.finish(item, 'failed', failure)
       this.session.failed++
+      this.session.lastName = nameOf(item)
     }
     this.changed()
   }
@@ -706,6 +673,15 @@ export class DownloadQueue {
       this.pumpQueued = false
       await this.startNext()
     })
+  }
+
+  /** The networks to start a download on: every one connected, bar those switched off on the
+   * start screen — unless that would leave none. */
+  private async networksToUse(): Promise<string[]> {
+    const connected = (await this.networks.refresh()).map((iface) => iface.id)
+    const excluded = new Set((await this.settings().catch(() => null))?.excludedNetworks ?? [])
+    const chosen = connected.filter((id) => !excluded.has(id))
+    return chosen.length > 0 ? chosen : connected
   }
 
   private async startNext(): Promise<void> {
@@ -764,15 +740,15 @@ export class DownloadQueue {
           this.changed()
           return
         }
-        // Nothing to resume from after all (its partial file went missing): start it over.
+        // Nothing to resume from after all — its partial file went missing, or the new link
+        // serves another file: start over from this link.
         const stale = item.downloadId
         item.downloadId = undefined
         await manager.remove(stale)
       }
 
-      const interfaces = await this.networks.refresh()
-      if (interfaces.length === 0) throw new Error('No network connection')
-      const splittable = probe.supportsRanges && probe.totalBytes !== null
+      const interfaceIds = await this.networksToUse()
+      if (interfaceIds.length === 0) throw new Error('No network connection')
       const downloadId = await manager.start({
         url: probe.finalUrl,
         destinationDir: this.destinationDir,
@@ -781,11 +757,12 @@ export class DownloadQueue {
         suggestedFileName:
           (probe.attachment && probe.suggestedFileName) || item.fileName || probe.suggestedFileName,
         totalBytes: probe.totalBytes ?? 0,
-        supportsRanges: splittable,
-        interfaceIds: interfaces.map((iface) => iface.id),
+        supportsRanges: probe.supportsRanges && probe.totalBytes !== null,
+        interfaceIds,
         etag: probe.etag,
         lastModified: probe.lastModified,
-        context
+        context,
+        queueItemId: item.id
       })
       if (!this.items.includes(item)) {
         // Removed while it was starting: its download goes with it.
@@ -808,25 +785,28 @@ export class DownloadQueue {
         this.changed()
         return
       }
-      this.fail(item, classifyFailure(error))
+      this.fail(item, classifyError(error))
     }
     // Failed without a download to report back: go on to the next one.
     if (item.status !== 'active') this.pump()
   }
 
-  /** Nothing left to start: says how it went, if the queue got through more than one file. */
+  /** Nothing left to start: says how it went — in one notification, rather than one per file
+   * (the queue's downloads don't notify on their own; see DownloadManager.notifyAbout). */
   private finishSession(): void {
-    const { completed, failed } = this.session
-    this.session = { completed: 0, failed: 0 }
-    if (completed + failed < 2 || testKnobs.userDataDir || !Notification.isSupported()) return
+    const { completed, failed, lastName } = this.session
+    this.session = { completed: 0, failed: 0, lastName: '' }
+    if (completed + failed === 0 || testKnobs.userDataDir || !Notification.isSupported()) return
+    const body =
+      completed + failed === 1
+        ? completed === 1
+          ? `${lastName} has finished downloading.`
+          : `${lastName} couldn’t be downloaded.`
+        : failed > 0
+          ? `${completed} downloaded, ${failed} failed.`
+          : `All ${completed} files downloaded.`
     try {
-      new Notification({
-        title: 'Queue finished',
-        body:
-          failed > 0
-            ? `${completed} downloaded, ${failed} failed.`
-            : `All ${completed} files downloaded.`
-      }).show()
+      new Notification({ title: 'Queue finished', body }).show()
     } catch {
       // Best-effort notification
     }

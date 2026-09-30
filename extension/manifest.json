@@ -27,6 +27,7 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["downloads", "cookies", "storage", "contextMenus"],
-  "host_permissions": ["<all_urls>"]
+  "permissions": ["downloads", "cookies", "storage", "contextMenus", "scripting", "notifications"],
+  "host_permissions": ["http://127.0.0.1/*", "*://filekeeper.net/*", "*://*.filekeeper.net/*"],
+  "optional_host_permissions": ["*://*/*"]
 }

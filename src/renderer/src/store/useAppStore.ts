@@ -53,6 +53,8 @@ interface AppStore {
   draftUrl: string
   /** Persisted — the last folder picked, falling back to downloadsDir. */
   destinationDir: string
+  /** Persisted — networks switched off on the start screen; the queue leaves them out too. */
+  excludedNetworks: string[]
 
   /** The download queue, as the main process last sent it. Null until the first one arrives. */
   queue: QueueState | null
@@ -77,6 +79,7 @@ interface AppStore {
   clearCurrentDownload: () => void
   setDraftUrl: (url: string) => void
   setDestinationDir: (dir: string) => void
+  setExcludedNetworks: (ids: string[]) => void
   receiveQueue: (queue: QueueState) => void
   setQueueOpen: (open: boolean) => void
   openAddLinks: (text?: string) => void
@@ -112,6 +115,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   draftUrl: '',
   destinationDir: initial.destinationDir ?? initial.downloadsDir,
+  excludedNetworks: initial.excludedNetworks,
 
   queue: null,
   queueOpen: false,
@@ -222,6 +226,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setDestinationDir: (destinationDir) => {
     set({ destinationDir })
     persist({ destinationDir })
+  },
+
+  setExcludedNetworks: (excludedNetworks) => {
+    set({ excludedNetworks })
+    persist({ excludedNetworks })
   },
 
   receiveQueue: (queue) => set({ queue }),
