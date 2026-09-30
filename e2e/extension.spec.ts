@@ -23,10 +23,7 @@ declare const chrome: {
 }
 
 function chromiumPath(): string | null {
-  const candidates = [
-    process.env.PLEXO_E2E_CHROMIUM,
-    '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'
-  ]
+  const candidates = [process.env.PLEXO_E2E_CHROMIUM]
   try {
     candidates.push(chromium.executablePath())
   } catch {

@@ -6,9 +6,13 @@
 const SHOW_MS = 5000
 
 /**
+ * @typedef {{ tone: 'success' | 'info' | 'warn' | 'error', title: string, detail?: string,
+ *   note?: string }} ToastMessage
+ */
+
+/**
  * @param {number | undefined} tabId The tab to show it in.
- * @param {{ tone: 'success' | 'info' | 'warn' | 'error', title: string, detail?: string,
- *   note?: string }} message
+ * @param {ToastMessage} message
  */
 export async function confirmOnPage(tabId, message) {
   if (tabId !== undefined && tabId >= 0) {

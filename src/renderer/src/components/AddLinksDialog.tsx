@@ -2,13 +2,11 @@ import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { ListPlus, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
-import { describeError, toDisplayPath } from '../utils/format'
+import { describeError } from '../utils/format'
 import { parseLinks } from '../utils/links'
+import { QueueDestination } from './QueueDestination'
 import { Button } from './ui/button'
 import { Checkbox } from './ui/checkbox'
-
-const labelClass =
-  'shrink-0 font-mono text-[10px] leading-none tracking-[0.14em] text-muted-foreground uppercase'
 
 /** Pasting many links at once: they join the queue, to download one after another. */
 export function AddLinksDialog(): React.JSX.Element {
@@ -44,7 +42,6 @@ function AddLinksForm({
   onDone: () => void
 }): React.JSX.Element {
   const queue = useAppStore((store) => store.queue)
-  const homeDir = useAppStore((store) => store.homeDir)
   const setQueueOpen = useAppStore((store) => store.setQueueOpen)
   const [text, setText] = useState(initialText)
   const [startNow, setStartNow] = useState(true)
@@ -69,12 +66,6 @@ function AddLinksForm({
   if (parsed.repeated > 0) notes.push(`${parsed.repeated} repeated`)
   if (parsed.unreadable > 0) {
     notes.push(`${parsed.unreadable} ${parsed.unreadable === 1 ? 'line' : 'lines'} without a link`)
-  }
-
-  const handleBrowse = async (): Promise<void> => {
-    if (!queue) return
-    const chosen = await window.plexo.chooseDestinationFolder(queue.destinationDir)
-    if (chosen) await window.plexo.queueCommand({ kind: 'setDestination', dir: chosen })
   }
 
   const handleAdd = async (): Promise<void> => {
@@ -136,21 +127,7 @@ function AddLinksForm({
           {notes.length > 0 && <span className="text-muted-foreground">· {notes.join(' · ')}</span>}
         </div>
 
-        <div className="flex h-8 items-center gap-[9px] rounded-[8px] border-[0.5px] border-border px-2.5">
-          <div className={labelClass}>Save to</div>
-          <div className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[var(--text-secondary)]">
-            {queue ? toDisplayPath(queue.destinationDir, homeDir) : ''}
-          </div>
-          <Button
-            type="button"
-            variant="link"
-            size="xs"
-            onClick={handleBrowse}
-            className="h-auto shrink-0 px-0 font-mono text-[11px]"
-          >
-            Browse…
-          </Button>
-        </div>
+        <QueueDestination />
 
         <label className="flex w-fit cursor-pointer items-center gap-2 font-sans text-[12px] text-[var(--text-secondary)] select-none">
           <Checkbox checked={startNow} onCheckedChange={(checked) => setStartNow(checked)} />

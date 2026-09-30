@@ -120,6 +120,13 @@ export interface BlockState {
  */
 export type NetworkStatus = 'on' | 'off' | 'offline' | 'unreachable' | 'failed'
 
+/** What a server answered that made a download (or one of its networks) give up: its HTTP
+ * status, and whether it sent a web page (an error page, a login, a captcha) instead of the file. */
+export interface ServerRefusal {
+  status: number
+  webPage: boolean
+}
+
 /** A network as one download sees it: whether the user has it on, and how it is doing. */
 export interface DownloadNetwork {
   /** A NetworkInterfaceInfo id. */
@@ -131,6 +138,8 @@ export interface DownloadNetwork {
   enabled: boolean
   status: NetworkStatus
   error?: string
+  /** For a failed network whose server answered with a refusal: what it answered. */
+  refusal?: ServerRefusal
   /** Bytes of the file it delivered. */
   bytesDownloaded: number
   speedBytesPerSec: number
@@ -158,6 +167,8 @@ export interface DownloadState {
   totalBlocks?: number
   blockSizeBytes?: number
   error?: string
+  /** For an error the server's answers caused: what it answered (see ServerRefusal). */
+  refusal?: ServerRefusal
   /** For an error: whether resuming can pick up where it stopped. False when the progress was
    * thrown away, e.g. the file changed on the server. */
   resumable?: boolean
@@ -211,6 +222,9 @@ export interface AppSettings {
   destinationDir?: string
   /** User customizations (name/color) per network interface id. */
   networkPreferences?: NetworkPreferences
+  /** Networks switched off on the start screen, by id: downloads, the queue's included, don't
+   * start on them. */
+  excludedNetworks?: string[]
 }
 
 /** Everything the renderer needs for its first paint, read synchronously by the preload so no
@@ -222,6 +236,7 @@ export interface InitialState {
   networkPreferences: NetworkPreferences
   /** The last folder picked, if it still exists — otherwise the renderer uses downloadsDir. */
   destinationDir?: string
+  excludedNetworks: string[]
 }
 
 export interface StartDownloadRequest {
@@ -239,6 +254,9 @@ export interface StartDownloadRequest {
   streamsPerNetwork?: number
   /** Cookies, Referer and User-Agent every request sends (see RequestContext). */
   context?: RequestContext
+  /** Started by the download queue for this item: how the queue finds it again after a
+   * relaunch, and why it doesn't notify on its own (the queue sums up instead). */
+  queueItemId?: string
 }
 
 /**
@@ -301,6 +319,9 @@ export interface QueueState {
   /** The current download is one of the user's own that failed: the queue waits until they
    * resume it or move on, rather than sweeping it away. */
   blocked: boolean
+  /** The saved queue couldn't be read at launch: what to tell the user. Nothing is saved over it
+   * until a relaunch reads it. */
+  loadError?: string
   items: QueueItem[]
   bridge: BrowserBridgeState
 }

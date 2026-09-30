@@ -150,11 +150,13 @@ async function sendLink(url, pageUrl, incognito, tabId) {
   }
 }
 
-/** Sends one link to Plexo's queue. Resolves to the confirmation to show; throws a PlexoError
- * if Plexo didn't take it. */
+/**
+ * Sends one link to Plexo's queue. Resolves to the confirmation to show; throws a PlexoError if
+ * Plexo didn't take it.
+ * @returns {Promise<import('./toast.js').ToastMessage>}
+ */
 async function handOver(settings, link) {
   const result = await plexoFetch('/v1/downloads', {
-    method: 'POST',
     port: settings.port,
     token: settings.token,
     body: { items: [{ ...link, userAgent: navigator.userAgent }] }
@@ -175,7 +177,10 @@ async function handOver(settings, link) {
   return { tone: 'success', title: 'Sent to Plexo', detail: name, note: 'Added to the queue.' }
 }
 
-/** What went wrong, on the toolbar button; resolves to the same for the page. */
+/**
+ * What went wrong, on the toolbar button; resolves to the same for the page.
+ * @returns {Promise<import('./toast.js').ToastMessage>}
+ */
 async function notice(error) {
   if (error instanceof PlexoError && error.kind === 'unauthorized') {
     // Plexo forgot this browser (Disconnect in Plexo): it has to be connected again.

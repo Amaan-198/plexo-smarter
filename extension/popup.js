@@ -20,7 +20,11 @@ const REFRESH_MS = 1000
 /** Rows shown; the rest are counted. */
 const MAX_ROWS = 6
 
-const $ = (id) => document.getElementById(id)
+/** The page's elements, all form controls or plain containers: typed as the former, whose
+ * properties (value, checked, disabled) are the ones read and set here.
+ * @param {string} id
+ * @returns {HTMLInputElement} */
+const $ = (id) => /** @type {HTMLInputElement} */ (document.getElementById(id))
 
 function describeRules(settings) {
   const sites = settings.allowlist.map(normalizeDomain).filter(Boolean)
@@ -266,8 +270,8 @@ async function render() {
   return status
 }
 
-$('enabled').addEventListener('change', (event) => {
-  void saveSettings({ enabled: event.target.checked })
+$('enabled').addEventListener('change', () => {
+  void saveSettings({ enabled: $('enabled').checked })
 })
 
 // Connecting waits for an answer in Plexo's window, which closes this popup; the settings page

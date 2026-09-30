@@ -4,7 +4,9 @@ import { join } from 'node:path'
 import { app, type BrowserWindow } from 'electron'
 import type { BrowserBridgeState, QueueLink } from '../../shared/types'
 import { readJson, updateJson } from '../jsonFile'
-import { sanitizeContext, sanitizeLink, type DownloadQueue } from '../queue/downloadQueue'
+import { sanitizeContext } from '../download/requestContext'
+import type { DownloadQueue } from '../queue/downloadQueue'
+import { sanitizeLink } from '../queue/items'
 import { testKnobs } from '../testKnobs'
 
 /** Where the browser extension finds Plexo. Fixed, so the extension needs no setup. */
@@ -62,12 +64,13 @@ const EXTENSION_ORIGIN = /^[a-z-]+-extension:\/\/[a-z0-9-]+\/?$/i
  *
  * - Host must name the loopback address and this port, so a web page can't reach it by pointing
  *   a domain of its own at 127.0.0.1 (DNS rebinding).
- * - A request from a web page carries that page's Origin and is refused outright; browsers send
- *   an extension's own origin from its pages and service worker, which no page can forge.
- * - Queuing a download takes a token that a browser only gets once the user has allowed it, in
- *   Plexo's own window (see /v1/pair). Only a hash of each token is kept on disk.
- * - Bodies are JSON (which a page can't send cross-origin without a preflight this server never
- *   approves), capped in size, and checked field by field before anything is queued.
+ * - Every request is a JSON POST carrying an extension's own Origin, which browsers send with an
+ *   extension's POSTs and no web page can forge. A page's request carries its own origin, or none
+ *   (an <img>, a <script>), and it can't send JSON across origins without a preflight this server
+ *   never approves — so a page can't even find out Plexo is there by asking.
+ * - Anything past /v1/status and /v1/pair takes a token that a browser only gets once the user
+ *   has allowed it, in Plexo's own window (see pair). Only a hash of each token is kept on disk.
+ * - Bodies are capped in size, and checked field by field before anything is queued.
  */
 export class BrowserBridge {
   private server: Server | null = null
@@ -197,31 +200,38 @@ export class BrowserBridge {
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       this.checkCaller(req)
-      const path = (req.url ?? '/').split('?')[0]
-      if (req.method === 'GET' && path === '/v1/status') {
-        return send(res, 200, {
-          app: 'plexo',
-          version: app.getVersion(),
-          paired: this.authorized(req)
-        })
+      if (req.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+      const body = await readBody(req)
+      switch ((req.url ?? '/').split('?')[0]) {
+        case '/v1/status':
+          return send(res, 200, {
+            app: 'plexo',
+            version: app.getVersion(),
+            paired: this.authorized(req)
+          })
+        case '/v1/pair':
+          return await this.pair(req, res, body)
+        case '/v1/downloads':
+          this.requireAuthorized(req)
+          return await this.add(res, body)
+        case '/v1/queue':
+          this.requireAuthorized(req)
+          return send(res, 200, await this.queue.browserView())
+        case '/v1/queue/command':
+          this.requireAuthorized(req)
+          return await this.command(res, body)
+        default:
+          throw new HttpError(404, 'Not found')
       }
-      if (req.method === 'POST' && path === '/v1/pair') return await this.pair(req, res)
-      if (req.method === 'POST' && path === '/v1/downloads') return await this.add(req, res)
-      if (req.method === 'GET' && path === '/v1/queue') {
-        if (!this.authorized(req)) {
-          throw new HttpError(401, 'This browser isn’t connected to Plexo')
-        }
-        return send(res, 200, await this.queue.browserView())
-      }
-      if (req.method === 'POST' && path === '/v1/queue/command') {
-        return await this.command(req, res)
-      }
-      throw new HttpError(404, 'Not found')
     } catch (error) {
       if (res.headersSent) return
       if (error instanceof HttpError) send(res, error.status, { error: error.message })
       else send(res, 500, { error: 'Something went wrong in Plexo' })
     }
+  }
+
+  private requireAuthorized(req: IncomingMessage): void {
+    if (!this.authorized(req)) throw new HttpError(401, 'This browser isn’t connected to Plexo')
   }
 
   private checkCaller(req: IncomingMessage): void {
@@ -234,10 +244,7 @@ export class BrowserBridge {
     if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) {
       throw new HttpError(403, 'Forbidden')
     }
-    const origin = req.headers.origin
-    if (origin !== undefined && !EXTENSION_ORIGIN.test(origin)) {
-      throw new HttpError(403, 'Forbidden')
-    }
+    if (!EXTENSION_ORIGIN.test(req.headers.origin ?? '')) throw new HttpError(403, 'Forbidden')
   }
 
   /**
@@ -245,9 +252,11 @@ export class BrowserBridge {
    * open until they answer: allowed, it gets a token to send with every download from then on.
    * Only an extension can ask — its origin is what a browser sends from it, and no web page can.
    */
-  private async pair(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!EXTENSION_ORIGIN.test(req.headers.origin ?? '')) throw new HttpError(403, 'Forbidden')
-    const body = await readBody(req)
+  private async pair(
+    req: IncomingMessage,
+    res: ServerResponse,
+    body: Record<string, unknown>
+  ): Promise<void> {
     const client =
       typeof body.client === 'string' && body.client.trim()
         ? body.client.trim().slice(0, 60)
@@ -276,9 +285,7 @@ export class BrowserBridge {
     send(res, 200, { token })
   }
 
-  private async add(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.authorized(req)) throw new HttpError(401, 'This browser isn’t connected to Plexo')
-    const body = await readBody(req)
+  private async add(res: ServerResponse, body: Record<string, unknown>): Promise<void> {
     const raw = Array.isArray(body.items) ? body.items : [body]
     if (raw.length > MAX_LINKS_PER_REQUEST) throw new HttpError(413, 'Too many links at once')
     const links: QueueLink[] = []
@@ -306,9 +313,8 @@ export class BrowserBridge {
   }
 
   /** What the extension's popup can do to a queue item: the same as Plexo's own queue panel. */
-  private async command(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.authorized(req)) throw new HttpError(401, 'This browser isn’t connected to Plexo')
-    const { kind, id } = await readBody(req)
+  private async command(res: ServerResponse, body: Record<string, unknown>): Promise<void> {
+    const { kind, id } = body
     if (typeof id !== 'string' || !id) throw new HttpError(400, 'Which item?')
     switch (kind) {
       case 'pause':

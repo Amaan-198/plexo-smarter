@@ -58,7 +58,10 @@ function handle<K extends keyof IpcContract>(
 
 const DESTINATION_CHECK_MS = 300
 
-export function registerIpcHandlers(getWindow: () => BrowserWindow | null): DownloadManager {
+export function registerIpcHandlers(getWindow: () => BrowserWindow | null): {
+  manager: DownloadManager
+  queue: DownloadQueue
+} {
   // The main process keeps the network list, for downloads and the window alike.
   const networks = new NetworkMonitor((list) => {
     manager.networksChanged()
@@ -66,10 +69,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): Down
     if (window && !window.isDestroyed()) window.webContents.send(IpcChannels.networksChanged, list)
   })
   // The queue loads first: the manager asks it, while restoring, which failed downloads to keep.
-  const queue = new DownloadQueue(getWindow, networks, async () => {
-    const { destinationDir } = await loadSettings()
-    return destinationDir ?? getDefaultDownloadsDir()
-  })
+  const queue = new DownloadQueue(getWindow, networks, async () => ({
+    ...(await loadSettings()),
+    downloadsDir: getDefaultDownloadsDir()
+  }))
   const manager = new DownloadManager(getWindow, networks, () => queue.retainedDownloads())
   void queue.attach(manager)
   const bridge = new BrowserBridge(queue, getWindow)
@@ -126,7 +129,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): Down
         downloadsDir: getDefaultDownloadsDir(),
         themeSource: currentThemeSource(),
         networkPreferences: settings.networkPreferences ?? {},
-        destinationDir: destinationExists ? destinationDir : undefined
+        destinationDir: destinationExists ? destinationDir : undefined,
+        excludedNetworks: settings.excludedNetworks ?? []
       } satisfies InitialState
     } catch (error) {
       console.error('[plexo] failed to read initial state', error)
@@ -135,7 +139,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): Down
         homeDir: '',
         downloadsDir: '',
         themeSource: currentThemeSource(),
-        networkPreferences: {}
+        networkPreferences: {},
+        excludedNetworks: []
       } satisfies InitialState
     }
   })
@@ -240,5 +245,5 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): Down
     return { ...info, dismissed: info.version === dismissedUpdateVersion }
   })
 
-  return manager
+  return { manager, queue }
 }

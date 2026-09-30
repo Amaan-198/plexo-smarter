@@ -1,7 +1,8 @@
-import { readdir, readFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { request as httpRequest } from 'node:http'
+import { join } from 'node:path'
 import type { QueueItem, QueueState } from '../src/shared/types'
-import { expect, test, type PlexoApp } from './fixtures'
+import { expect, LAN_ADDRESS, test, type PlexoApp } from './fixtures'
 import { sha256, type Origin } from './origin'
 
 // Q. The download queue and the browser extension's local endpoint: links downloaded one after
@@ -9,6 +10,19 @@ import { sha256, type Origin } from './origin'
 // browser session carrying that session with them.
 
 const EXTENSION_ORIGIN = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop'
+
+/** /v1/status asked by hand: fetch() won't send a Host of our choosing, nor leave Origin out. */
+function statusOf(port: number, headers: Record<string, string>): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const options = { host: '127.0.0.1', port, path: '/v1/status', method: 'POST', headers }
+    const req = httpRequest(options, (res) => {
+      res.resume()
+      resolve(res.statusCode ?? 0)
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
 
 async function queueOf(plexo: PlexoApp): Promise<QueueState> {
   return plexo.api.getQueue()
@@ -52,17 +66,18 @@ class Browser {
 
   request(
     path: string,
-    init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}
+    init: { body?: unknown; headers?: Record<string, string> } = {}
   ): Promise<Response> {
+    // As the extension sends everything: a JSON POST.
     return fetch(`http://127.0.0.1:${this.port}${path}`, {
-      method: init.method ?? 'POST',
+      method: 'POST',
       headers: {
         Origin: EXTENSION_ORIGIN,
         'Content-Type': 'application/json',
         ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
         ...init.headers
       },
-      body: init.body === undefined ? undefined : JSON.stringify(init.body)
+      body: typeof init.body === 'string' ? init.body : JSON.stringify(init.body ?? {})
     })
   }
 
@@ -97,6 +112,13 @@ async function browserFor(plexo: PlexoApp): Promise<Browser> {
 // Every file the queue saves lands in the test's own folder, not the user's Downloads.
 test.beforeEach(async ({ plexo }) => {
   await plexo.api.queueCommand({ kind: 'setDestination', dir: plexo.dirs.dest })
+})
+
+// However a test ends, no download's staging file is left behind in the destination.
+test.afterEach(async ({ plexo }) => {
+  const staging = async (): Promise<string[]> =>
+    (await readdir(plexo.dirs.dest)).filter((name) => name.endsWith('.plexo'))
+  await expect.poll(staging, { message: 'no staging files left behind' }).toEqual([])
 })
 
 test.describe('download queue @smoke', () => {
@@ -200,24 +222,14 @@ test.describe('browser extension endpoint @smoke', () => {
     })
     expect(fromPage.status).toBe(403)
     // A page reaching the loopback address through a name of its own (DNS rebinding).
-    // fetch() won't send a Host of our choosing, so this one goes out by hand.
-    const rebound = await new Promise<number>((resolve, reject) => {
-      const req = httpRequest(
-        {
-          host: '127.0.0.1',
-          port: browser.port,
-          path: '/v1/status',
-          headers: { Host: `evil.example:${browser.port}` }
-        },
-        (res) => {
-          res.resume()
-          resolve(res.statusCode ?? 0)
-        }
-      )
-      req.on('error', reject)
-      req.end()
-    })
-    expect(rebound).toBe(403)
+    expect(
+      await statusOf(browser.port, {
+        Host: `evil.example:${browser.port}`,
+        Origin: EXTENSION_ORIGIN
+      })
+    ).toBe(403)
+    // A page's <img> or <script>, which sends no Origin: it can't even tell Plexo is there.
+    expect(await statusOf(browser.port, {})).toBe(403)
     // Not connected yet.
     const unpaired = await browser.request('/v1/downloads', { body: { items: [link] } })
     expect(unpaired.status).toBe(401)
@@ -240,20 +252,21 @@ test.describe('browser extension endpoint @smoke', () => {
 
     // Allowed: the token works, and nothing was queued by any of the above.
     // Not connected: the queue isn't readable either.
-    expect((await browser.request('/v1/queue', { method: 'GET' })).status).toBe(401)
+    expect((await browser.request('/v1/queue')).status).toBe(401)
 
     await browser.pair(plexo)
-    const status = await browser.request('/v1/status', { method: 'GET' })
+    const status = await browser.request('/v1/status')
     expect(await status.json()).toMatchObject({ app: 'plexo', paired: true })
     expect((await queueOf(plexo)).items).toEqual([])
     expect((await queueOf(plexo)).bridge.pairedCount).toBe(1)
-    const live = await browser.request('/v1/queue', { method: 'GET' })
+    const live = await browser.request('/v1/queue')
     expect(await live.json()).toEqual({ running: false, items: [] })
   })
 
   test('a captured download carries its browser session to every request, and only to its own host', async ({
     plexo,
-    serve
+    serve,
+    dirs
   }) => {
     const origin = await serve({ size: 800 * 1024, seed: 11 })
     // A session link: without the browser's cookie, the server turns every request away.
@@ -310,8 +323,16 @@ test.describe('browser extension endpoint @smoke', () => {
     expect(item.fileName).toBe('session file.bin')
     await expectSavedAs(item, origin)
 
-    // The session never leaves the main process.
+    // The session never leaves the main process, and is kept encrypted on disk as the browser
+    // keeps it (where the system has a store for secrets to encrypt with).
     expect(JSON.stringify(queue)).not.toContain('secret')
+    if (await plexo.evaluateMain(({ safeStorage }) => safeStorage.isEncryptionAvailable(), null)) {
+      const manifest = join(dirs.userData, 'downloads', item.downloadId!, 'manifest.json')
+      for (const file of [join(dirs.userData, 'queue.json'), manifest]) {
+        await expect.poll(() => readFile(file, 'utf-8')).toContain('"sealed"')
+        expect(await readFile(file, 'utf-8')).not.toContain('secret')
+      }
+    }
 
     expect(origin.log.length).toBeGreaterThan(1)
     for (const request of origin.log) {
@@ -372,7 +393,7 @@ test.describe('browser extension endpoint @smoke', () => {
 
     await command('pause', item.id)
     await plexo.waitForStatus('paused')
-    const live = (await (await browser.request('/v1/queue', { method: 'GET' })).json()) as {
+    const live = (await (await browser.request('/v1/queue')).json()) as {
       items: { paused: boolean }[]
     }
     expect(live.items[0].paused).toBe(true)
@@ -427,5 +448,151 @@ test.describe('browser extension endpoint @smoke', () => {
       .filter((request) => request.path.startsWith('/new/'))
       .reduce((sum, request) => sum + request.bytesSent, 0)
     expect(fetchedAgain).toBeLessThanOrEqual(size - kept + 256 * 1024)
+  })
+})
+
+test.describe('queue safety', () => {
+  test('a saved queue that can’t be read is reported, and never saved over', async ({
+    plexo,
+    serve,
+    dirs
+  }) => {
+    await plexo.quit()
+    // Something that isn't a readable file where queue.json goes, as a lock would make it.
+    const path = join(dirs.userData, 'queue.json')
+    await rm(path, { force: true })
+    await mkdir(path)
+    await plexo.launch()
+    await plexo.api.queueCommand({ kind: 'setDestination', dir: dirs.dest })
+
+    const queue = await waitForQueue(plexo, (state) => !!state.loadError, 10_000)
+    expect(queue.loadError).toMatch(/couldn’t read its saved queue/)
+    // The queue still works for this session…
+    const origin = await serve({ size: 100 * 1024, seed: 51 })
+    await plexo.api.addToQueue([{ url: origin.url('/files/session.bin') }], { start: true })
+    await expectSavedAs((await waitForQueue(plexo, allDone)).items[0], origin)
+    // …but what's there is left as it was.
+    expect((await stat(path)).isDirectory()).toBe(true)
+  })
+
+  test('a change made just before quitting is saved', async ({ plexo, serve }) => {
+    const origin = await serve({ size: 64 * 1024, seed: 52 })
+    await plexo.api.addToQueue([{ url: origin.url('/files/late.bin') }], { start: false })
+    await plexo.quit()
+    await plexo.launch()
+    const queue = await waitForQueue(plexo, (state) => state.items.length > 0, 10_000)
+    expect(queue.items.map((item) => item.url)).toEqual([origin.url('/files/late.bin')])
+  })
+
+  test('a download started just before quitting is found again, not started twice', async ({
+    plexo,
+    serve,
+    dirs
+  }) => {
+    const origin = await serve({ size: 1024 * 1024, seed: 53, bytesPerSecond: 100_000 })
+    await plexo.api.addToQueue([{ url: origin.url('/files/once.bin') }], { start: true })
+    await waitForQueue(plexo, (queue) => (queue.items[0]?.bytesDownloaded ?? 0) > 0)
+    await plexo.quit()
+
+    // As if the app had quit before the queue could note which download was its item's.
+    const path = join(dirs.userData, 'queue.json')
+    const saved = JSON.parse(await readFile(path, 'utf-8'))
+    saved.items[0].status = 'queued'
+    delete saved.items[0].downloadId
+    await writeFile(path, JSON.stringify(saved))
+
+    await plexo.launch()
+    const restored = await waitForQueue(plexo, (queue) => queue.items[0]?.status === 'active')
+    expect(restored.items[0].downloadId).toBe((await plexo.current())?.id)
+    await plexo.api.queueCommand({ kind: 'start' })
+    await expectSavedAs((await waitForQueue(plexo, allDone)).items[0], origin)
+    expect(await readdir(dirs.dest)).toEqual(['once.bin'])
+  })
+
+  test('removing an old download never touches the staging file of a new one by the same name', async ({
+    plexo,
+    serve,
+    dirs
+  }) => {
+    const first = await serve({ size: 64 * 1024, seed: 54 })
+    const oldId = await plexo.start(first.url('/files/same.bin'), first.sha256)
+    await plexo.waitForStatus('completed')
+    // The finished file is deleted, so the name is free for the next download of it.
+    await rm(join(dirs.dest, 'same.bin'))
+
+    const second = await serve({ size: 1024 * 1024, seed: 55, bytesPerSecond: 150_000 })
+    await plexo.api.addToQueue([{ url: second.url('/other/same.bin') }], { start: true })
+    await waitForQueue(plexo, (queue) => (queue.items[0]?.bytesDownloaded ?? 0) > 0)
+    await plexo.api.removeDownload(oldId)
+
+    await expectSavedAs((await waitForQueue(plexo, allDone)).items[0], second)
+  })
+
+  test('a failure is classified by what the server answered, not by its wording', async ({
+    plexo,
+    serve
+  }) => {
+    // Both answer the probe, then send a 200 where the file's bytes should be: one a web page
+    // (a link that stopped working), one not (a server that stopped serving parts).
+    const page = await serve({ size: 256 * 1024, seed: 56 })
+    page.setRule((request) =>
+      request.range && request.range.end !== 0
+        ? { status: 200, headers: { 'Content-Type': 'text/html' } }
+        : undefined
+    )
+    const whole = await serve({ size: 256 * 1024, seed: 57 })
+    whole.setRule((request) =>
+      request.range && request.range.end !== 0 ? { status: 200 } : undefined
+    )
+    await plexo.api.addToQueue(
+      [{ url: page.url('/files/page.bin') }, { url: whole.url('/files/whole.bin') }],
+      { start: true }
+    )
+    const queue = await waitForQueue(plexo, allDone, 60_000)
+    const byName = (name: string): QueueItem | undefined =>
+      queue.items.find((item) => item.url.endsWith(name))
+    expect(byName('page.bin')).toMatchObject({ status: 'failed', problem: 'expired' })
+    // Not the link's fault: it got its automatic second try before failing.
+    expect(byName('whole.bin')).toMatchObject({ status: 'failed', problem: 'other', attempts: 2 })
+  })
+
+  test('the queue starts downloads only on the networks left on at the start screen', async ({
+    plexo,
+    serve
+  }) => {
+    test.skip(!LAN_ADDRESS, 'Needs a second network')
+    await plexo.api.updateSettings({ excludedNetworks: ['b'] })
+    const origin = await serve({ size: 512 * 1024, seed: 58 })
+    await plexo.api.addToQueue([{ url: origin.url('/files/one-network.bin') }], { start: true })
+    await expectSavedAs((await waitForQueue(plexo, allDone)).items[0], origin)
+    const froms = new Set(origin.chunkRequests().map((request) => request.from))
+    expect([...froms]).toEqual(['127.0.0.1'])
+  })
+
+  test('a fresh link that serves a different file is not stitched onto the old one', async ({
+    plexo,
+    serve
+  }) => {
+    // Same size, no ETag or Last-Modified: nothing in the headers tells the two apart.
+    const size = 1536 * 1024
+    const old = await serve({ size, seed: 61, etag: null, bytesPerSecond: 150_000 })
+    const other = await serve({ size, seed: 62, etag: null })
+    let expired = false
+    old.setRule(() => (expired ? { status: 403 } : undefined))
+
+    const browser = await browserFor(plexo)
+    await browser.pair(plexo)
+    const page = 'http://127.0.0.1/abc/big.bin.html'
+    await browser.send([{ url: old.url('/old/big.bin'), fileName: 'big.bin', referrer: page }])
+    await waitForQueue(plexo, (queue) => (queue.items[0]?.bytesDownloaded ?? 0) > size / 4)
+    expired = true
+    await waitForQueue(plexo, (queue) => queue.items[0]?.status === 'failed')
+
+    expect(
+      await browser.send([{ url: other.url('/new/big.bin'), fileName: 'big.bin', referrer: page }])
+    ).toMatchObject({ refreshed: 1 })
+    // The bytes on disk were compared with the new link's: not the same, so it started over.
+    const queue = await waitForQueue(plexo, allDone)
+    await expectSavedAs(queue.items[0], other)
   })
 })

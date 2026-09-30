@@ -73,8 +73,12 @@ export function IdleScreen(): React.JSX.Element {
   const openAddLinks = useAppStore((store) => store.openAddLinks)
 
   const [probe, setProbe] = useState<ProbeState>({ status: 'idle' })
-  // Tracks deselections rather than selections, so a newly-detected interface starts selected.
-  const [deselectedInterfaceIds, setDeselectedInterfaceIds] = useState<string[]>([])
+  // Deselections rather than selections, so a newly-detected interface starts selected. Saved:
+  // the queue's downloads start on the same networks.
+  const excludedNetworks = useAppStore((store) => store.excludedNetworks)
+  const setExcludedNetworks = useAppStore((store) => store.setExcludedNetworks)
+  // For a file that can only go over one network: the one picked for it, not remembered.
+  const [singlePick, setSinglePick] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
   const [fileNameOverride, setFileNameOverride] = useState<string | null>(null)
@@ -118,8 +122,12 @@ export function IdleScreen(): React.JSX.Element {
   const sizeUnknown = isSingleStreamOnly && ready.supportsRanges
 
   const detectedIds = interfaces.map((iface) => iface.id)
-  const enabledIds = detectedIds.filter((id) => !deselectedInterfaceIds.includes(id))
-  const selectedInterfaceIds = isSingleStreamOnly ? enabledIds.slice(0, 1) : enabledIds
+  // Networks switched off last time may be all that's connected now: then every one is on.
+  const included = detectedIds.filter((id) => !excludedNetworks.includes(id))
+  const enabledIds = included.length > 0 ? included : detectedIds
+  const selectedInterfaceIds = isSingleStreamOnly
+    ? [singlePick && detectedIds.includes(singlePick) ? singlePick : enabledIds[0]].filter(Boolean)
+    : enabledIds
 
   const startLabel = starting ? 'Starting…' : probe.status === 'probing' ? 'Checking…' : 'Start'
   const canStart =
@@ -164,23 +172,17 @@ export function IdleScreen(): React.JSX.Element {
   const handleToggleInterface = (id: string): void => {
     if (isSingleStreamOnly) {
       // Single-stream mode can only download through 1 interface at a time
-      setDeselectedInterfaceIds(detectedIds.filter((otherId) => otherId !== id))
+      setSinglePick(id)
       return
     }
 
-    setDeselectedInterfaceIds((prev) => {
-      const isCurrentlySelected = !prev.includes(id)
-      if (isCurrentlySelected) {
-        // Deselecting: keep at least 1 interface selected
-        const remainingCount = detectedIds.filter(
-          (otherId) => !prev.includes(otherId) && otherId !== id
-        ).length
-        if (remainingCount === 0) return prev
-        return [...prev, id]
-      } else {
-        return prev.filter((entry) => entry !== id)
-      }
-    })
+    if (enabledIds.includes(id)) {
+      // Deselecting: keep at least 1 interface selected
+      if (enabledIds.length === 1) return
+      setExcludedNetworks([...excludedNetworks.filter((entry) => entry !== id), id])
+    } else {
+      setExcludedNetworks(excludedNetworks.filter((entry) => entry !== id))
+    }
   }
 
   const handleBrowse = async (): Promise<void> => {

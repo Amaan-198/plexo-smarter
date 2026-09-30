@@ -188,10 +188,18 @@
               spellcheck="false"
               style="margin-top: 10px"
             ></textarea>
+            <div class="row" style="margin-top: 10px">
+              <button id="save-sites" class="secondary" type="button" disabled>Save sites</button>
+              <span class="muted" style="font-size: 12px">
+                The browser asks to let the extension read each new site’s cookies.
+              </span>
+            </div>
+            <p id="sites-error" class="note error" role="alert" hidden></p>
           </div>
           <p class="muted" style="font-size: 12px">
             Anything else stays in the browser. You can always right-click a link and choose
-            <em>Download with Plexo</em>. Downloads in private windows are never sent.
+            <em>Download with Plexo</em> — from a site not on the list, without its cookies.
+            Downloads in private windows are never sent.
           </p>
         </div>
       </section>

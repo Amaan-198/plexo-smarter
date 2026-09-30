@@ -1,3 +1,4 @@
+import { nameOf } from '@shared/queueItemName'
 import type { DownloadState, QueueItem, QueueState } from '@shared/types'
 import { cn } from 'cn'
 import {
@@ -22,12 +23,10 @@ import { useAppStore } from '../store/useAppStore'
 import { formatBytes, formatEta, formatSpeed, toDisplayPath } from '../utils/format'
 import { FileNameText } from './FileNameText'
 import { ScreenFooter } from './ScreenFooter'
+import { QueueDestination } from './QueueDestination'
 import { Button } from './ui/button'
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from './ui/sheet'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
-
-const labelClass =
-  'shrink-0 font-mono text-[10px] leading-none tracking-[0.14em] text-muted-foreground uppercase'
 
 function command(command: Parameters<typeof window.plexo.queueCommand>[0]): void {
   void window.plexo.queueCommand(command).catch(() => {})
@@ -49,16 +48,6 @@ function hostOf(url: string | undefined): string | null {
     return new URL(url).hostname.replace(/^www\./, '')
   } catch {
     return null
-  }
-}
-
-function displayName(item: QueueItem): string {
-  if (item.fileName) return item.fileName
-  try {
-    const path = decodeURIComponent(new URL(item.url).pathname)
-    return path.split('/').filter(Boolean).pop() || item.url
-  } catch {
-    return item.url
   }
 }
 
@@ -274,7 +263,7 @@ function QueueRow({
   const failed = item.status === 'failed'
   const total = live?.totalBytes || item.totalBytes || 0
   const done = live?.bytesDownloaded ?? item.bytesDownloaded ?? 0
-  const name = displayName(item)
+  const name = nameOf(item)
 
   return (
     <li
@@ -398,6 +387,19 @@ function QueueRow({
   )
 }
 
+/** Something the queue is waiting on, or can't do, said above the list. */
+function QueueNotice({ children }: { children: React.ReactNode }): React.JSX.Element {
+  return (
+    <div
+      role="status"
+      className="mt-2.5 flex animate-[plexo-row-in_200ms_ease-out] gap-2 rounded-[8px] border-[0.5px] border-[var(--color-usb-border)] bg-[var(--color-usb-bg)] px-2.5 py-2 font-sans text-[11.5px] leading-[1.45] text-[var(--color-usb-text)]"
+    >
+      <AlertTriangle className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+      <div>{children}</div>
+    </div>
+  )
+}
+
 function Summary({ queue }: { queue: QueueState }): React.JSX.Element {
   const count = (status: QueueItem['status']): number =>
     queue.items.filter((item) => item.status === status).length
@@ -514,12 +516,6 @@ export function QueueSheet(): React.JSX.Element {
     if (item.status === 'queued') positions.set(item.id, positions.size + 1)
   }
 
-  const handleBrowse = async (): Promise<void> => {
-    if (!queue) return
-    const chosen = await window.plexo.chooseDestinationFolder(queue.destinationDir)
-    if (chosen) command({ kind: 'setDestination', dir: chosen })
-  }
-
   return (
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetContent aria-describedby={undefined}>
@@ -614,31 +610,14 @@ export function QueueSheet(): React.JSX.Element {
             )}
           </div>
 
-          <div className="mt-2.5 flex h-8 items-center gap-[9px] rounded-[8px] border-[0.5px] border-border px-2.5">
-            <div className={labelClass}>Save to</div>
-            <div className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[var(--text-secondary)]">
-              {queue ? toDisplayPath(queue.destinationDir, homeDir) : ''}
-            </div>
-            <Button
-              type="button"
-              variant="link"
-              size="xs"
-              onClick={handleBrowse}
-              className="h-auto shrink-0 px-0 font-mono text-[11px]"
-            >
-              Browse…
-            </Button>
-          </div>
+          <QueueDestination className="mt-2.5" />
 
+          {queue?.loadError && <QueueNotice>{queue.loadError}</QueueNotice>}
           {queue?.blocked && (
-            <div
-              role="status"
-              className="mt-2.5 flex animate-[plexo-row-in_200ms_ease-out] gap-2 rounded-[8px] border-[0.5px] border-[var(--color-usb-border)] bg-[var(--color-usb-bg)] px-2.5 py-2 font-sans text-[11.5px] leading-[1.45] text-[var(--color-usb-text)]"
-            >
-              <AlertTriangle className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+            <QueueNotice>
               Your current download failed. Resume it, or start a new download, and the queue
               carries on.
-            </div>
+            </QueueNotice>
           )}
         </div>
 

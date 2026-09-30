@@ -3,7 +3,7 @@
 export const DEFAULT_PORT = 47513
 
 /** Everything the extension remembers, with what a fresh install starts from. */
-export const DEFAULTS = {
+const DEFAULTS = {
   /** Whether downloads are handed to Plexo at all. */
   enabled: true,
   port: DEFAULT_PORT,
@@ -52,8 +52,10 @@ export function onAllowlist(host, allowlist) {
 }
 
 /** The browser's name as the user knows it, for Plexo to ask "Connect Microsoft Edge?". */
-export function browserName() {
-  const brands = navigator.userAgentData?.brands ?? []
+function browserName() {
+  // User-Agent Client Hints: Chromium only, and not in the DOM's types yet.
+  /** @type {{ brand: string }[]} */
+  const brands = /** @type {any} */ (navigator).userAgentData?.brands ?? []
   const named = brands.find(({ brand }) => !/not.?a.?brand|chromium/i.test(brand))
   if (named) return named.brand
   if (/Edg\//.test(navigator.userAgent)) return 'Microsoft Edge'
@@ -69,17 +71,23 @@ export class PlexoError extends Error {
   }
 }
 
-/** A request to Plexo's local endpoint. Plexo only listens on this computer. */
-export async function plexoFetch(path, { method = 'GET', body, token, port, timeoutMs = 5000 }) {
+/**
+ * A request to Plexo's local endpoint. Plexo only listens on this computer.
+ * @param {string} path
+ * @param {{ body?: object, token?: string | null, port: number, timeoutMs?: number }} options
+ */
+export async function plexoFetch(path, { body = {}, token, port, timeoutMs = 5000 }) {
   let response
   try {
+    // Always a JSON POST: the only kind of request a browser sends with the extension's own
+    // origin, which is how Plexo tells it from a web page.
     response = await fetch(`http://127.0.0.1:${port}${path}`, {
-      method,
+      method: 'POST',
       headers: {
-        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {})
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
       cache: 'no-store'
     })
@@ -121,7 +129,6 @@ export async function connectionStatus(settings) {
  * the queue as it is afterwards. */
 export function queueCommand(settings, kind, id) {
   return plexoFetch('/v1/queue/command', {
-    method: 'POST',
     port: settings.port,
     token: settings.token,
     body: { kind, id }
@@ -141,7 +148,6 @@ export function fetchQueue(settings) {
  */
 export async function pair(settings) {
   const { token } = await plexoFetch('/v1/pair', {
-    method: 'POST',
     body: { client: browserName() },
     port: settings.port,
     timeoutMs: 100_000
@@ -155,14 +161,6 @@ export function formatBytes(bytes) {
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
   return `${(bytes / 1024 ** exponent).toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`
-}
-
-export function formatAge(ms) {
-  const minutes = Math.floor(ms / 60_000)
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`
 }
 
 /** How much of a long file name's end always stays in view (see splitName). */
